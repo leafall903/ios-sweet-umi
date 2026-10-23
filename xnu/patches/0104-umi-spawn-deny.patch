@@ -1,0 +1,100 @@
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -3966,6 +3966,8 @@
+ 			 */
+ 			error = spawn_persona_adopt(p, imgp->ip_px_persona);
+ 			if (error != 0) {
++				printf("SWEET SPAWN: persona adopt failed pid=%d error=%d\n",
++				    proc_getpid(p), error);
+ 				goto bad;
+ 			}
+ 		}
+@@ -4609,6 +4611,9 @@
+ 			}
+ 		}
+ 		retval[0] = error;
++		if (error) {
++			printf("SWEET SPAWN: pid=%d retval=%d\n", proc_getpid(p), error);
++		}
+ 
+ 		/*
+ 		 * If we had an error, perform an internal reap ; this is
+@@ -6218,8 +6223,12 @@
+ 	int error;
+ 	kauth_action_t action;
+ 
++	printf("SWEET XC: pid=%d vp=%p type=%d name=%s\n",
++	    proc_getpid(p), vp, vp->v_type, vp->v_name ? vp->v_name : "?");
+ 	/* Only allow execution of regular files */
+ 	if (!vnode_isreg(vp)) {
++		printf("SWEET XC: DENY@notreg pid=%d name=%s\n",
++		    proc_getpid(p), vp->v_name ? vp->v_name : "?");
+ 		return EACCES;
+ 	}
+ 
+@@ -6242,6 +6251,9 @@
+ 	 * file really is executable.
+ 	 */
+ 	if (!vfs_authopaque(vnode_mount(vp)) && ((vap->va_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) == 0)) {
++		printf("SWEET XC: DENY@noexecbit pid=%d name=%s mode=%o uid=%d cfgid=%d\n",
++		    proc_getpid(p), vp->v_name ? vp->v_name : "?", vap->va_mode,
++		    vap->va_uid, vap->va_gid);
+ 		return EACCES;
+ 	}
+ 
+@@ -6276,6 +6288,8 @@
+ #if CONFIG_MACF
+ 	error = mac_vnode_check_exec(imgp->ip_vfs_context, vp, imgp);
+ 	if (error) {
++		printf("SWEET XC: DENY@mac pid=%d name=%s error=%d\n",
++		    proc_getpid(p), vp->v_name ? vp->v_name : "?", error);
+ 		return error;
+ 	}
+ #endif
+@@ -6287,6 +6301,10 @@
+ 		action |= KAUTH_VNODE_READ_DATA;
+ 	}
+ 	if ((error = vnode_authorize(vp, NULL, action, imgp->ip_vfs_context)) != 0) {
++		printf("SWEET XC: DENY@authorize pid=%d name=%s error=%d mode=%o fuid=%d cfgid=%d ctxuid=%d\n",
++		    proc_getpid(p), vp->v_name ? vp->v_name : "?", error, vap->va_mode,
++		    vap->va_uid, vap->va_gid,
++		    kauth_cred_getuid(vfs_context_ucred(imgp->ip_vfs_context)));
+ 		return error;
+ 	}
+ 
+--- a/bsd/kern/mach_loader.c
++++ b/bsd/kern/mach_loader.c
+@@ -3770,6 +3770,8 @@
+ 
+ 	/* check for regular file */
+ 	if (vp->v_type != VREG) {
++		printf("SWEET ML: PROTECT@notreg type=%d name=%s\n", vp->v_type,
++		    vp->v_name ? vp->v_name : "?");
+ 		error = LOAD_PROTECT;
+ 		goto bad1;
+ 	}
+@@ -3782,18 +3784,24 @@
+ 
+ 	/* Check mount point */
+ 	if (vp->v_mount->mnt_flag & MNT_NOEXEC) {
++		printf("SWEET ML: PROTECT@noexec name=%s mnt=%x\n",
++		    vp->v_name ? vp->v_name : "?", vp->v_mount->mnt_flag);
+ 		error = LOAD_PROTECT;
+ 		goto bad1;
+ 	}
+ 
+ 	/* check access */
+ 	if ((error = vnode_authorize(vp, NULL, KAUTH_VNODE_EXECUTE | KAUTH_VNODE_READ_DATA, ctx)) != 0) {
++		printf("SWEET ML: PROTECT@auth name=%s error=%d ctxuid=%d\n",
++		    vp->v_name ? vp->v_name : "?", error, kauth_cred_getuid(vfs_context_ucred(ctx)));
+ 		error = LOAD_PROTECT;
+ 		goto bad1;
+ 	}
+ 
+ 	/* try to open it */
+ 	if ((error = VNOP_OPEN(vp, FREAD, ctx)) != 0) {
++		printf("SWEET ML: PROTECT@open name=%s error=%d ctxuid=%d\n",
++		    vp->v_name ? vp->v_name : "?", error, kauth_cred_getuid(vfs_context_ucred(ctx)));
+ 		error = LOAD_PROTECT;
+ 		goto bad1;
+ 	}

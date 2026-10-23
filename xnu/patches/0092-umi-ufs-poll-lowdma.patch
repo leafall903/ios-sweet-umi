@@ -1,0 +1,44 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -205,34 +205,14 @@
+ 	__builtin_arm_dsb(0xf);
+ 
+ 	ufs_wr(REG_UTRLDBR, 1);
+-	uint64_t deadline;
+-	nanoseconds_to_absolutetime(CMD_TIMEOUT_NS, &deadline);
+-	deadline += mach_absolute_time();
+-	bool sleepable = su.wait && su.ready && ml_get_interrupts_enabled() &&
+-	    !ml_at_interrupt_context() && get_preemption_level() == 0;
+-	uint64_t spin_until = 0, sleep_interval = 0;
+-	if (sleepable) {
+-		nanoseconds_to_absolutetime(CMD_SPIN_NS, &spin_until);
+-		spin_until += mach_absolute_time();
+-		nanoseconds_to_absolutetime(CMD_SLEEP_NS, &sleep_interval);
++	/* SWEET: bounded busy poll. Timer based waits do not wake reliably on
++	 * this board, which makes the transfer look like an infinite hang. */
++	for (uint32_t spin = 0; spin < 50000000 && (ufs_rd(REG_UTRLDBR) & 1); spin++) {
+ 	}
+-	while (ufs_rd(REG_UTRLDBR) & 1) {
+-		uint64_t now = mach_absolute_time();
+-		if (now > deadline) {
+-			ufs_wr(REG_UTRLCLR, ~1u);
+-			printf("SWEET UFS: command 0x%02x timed out\n", cdb[0]);
+-			return ETIMEDOUT;
+-		}
+-		if (sleepable && now >= spin_until) {
+-			uint64_t wake = now + MIN(sleep_interval, deadline - now);
+-			/* Keep the mutex: slot 0 and the bounce buffer are still owned. */
+-			if (assert_wait_deadline_with_leeway((event_t)&su.wait, THREAD_UNINT,
+-			    TIMEOUT_URGENCY_SYS_CRITICAL, wake, 0) == THREAD_WAITING) {
+-				thread_block(THREAD_CONTINUE_NULL);
+-			}
+-		} else {
+-			delay(1);
+-		}
++	if (ufs_rd(REG_UTRLDBR) & 1) {
++		ufs_wr(REG_UTRLCLR, ~1u);
++		printf("SWEET UFS: command 0x%02x timed out\n", cdb[0]);
++		return ETIMEDOUT;
+ 	}
+ 	__builtin_arm_dsb(0xf);
+ 	ufs_wr(REG_IS, ufs_rd(REG_IS));         /* acknowledge completion status */

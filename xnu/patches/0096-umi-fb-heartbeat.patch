@@ -1,0 +1,28 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -739,6 +739,25 @@
+ 		(void)tsleep(&sweet_log_chan, PZERO, "sweetlog", hz * (int)sweet_log_secs);
+ 		/* SWEET: heartbeat so we can tell a live kernel from a dead console. */
+ 		printf("SWEET TICK %llu\n", (unsigned long long)mach_absolute_time());
++		/*
++		 * SWEET: paint a moving bar straight into the framebuffer.  This does
++		 * not use the console lock, so it still shows if the console path is
++		 * wedged; a bar that keeps moving means the kernel is alive.
++		 */
++		{
++			static uint32_t hb;
++			PE_Video video;
++			PE_current_console(&video);
++			if (video.v_baseAddr && video.v_rowBytes && video.v_height > 16) {
++				uint32_t *row = (uint32_t *)(video.v_baseAddr +
++				    (uint64_t)(video.v_height - 160) * video.v_rowBytes);
++				uint32_t w = video.v_rowBytes / 4;
++				for (uint32_t x = 0; x < w; x++) {
++					row[x] = (((x / 8) + hb) & 3) == 0 ? 0x00ff00ff : 0;
++				}
++				hb++;
++			}
++		}
+ 		uint64_t total = os_atomic_load(&sweet_log_total, relaxed);
+ 		if (total == flushed) {
+ 			continue;

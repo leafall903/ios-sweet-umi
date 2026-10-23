@@ -1,0 +1,42 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -860,6 +860,29 @@
+ 	sweet_log_prev_valid = false;
+ }
+ 
++/* launchd opens StandardOutPath=/dev/console for daemons that run as user
++ * 501; the console node is 0600 root, so that open fails with EACCES and
++ * posix_spawn fails for every service. Make it world writable.
++ */
++static void
++sweet_fix_console(void)
++{
++	vnode_t vp = NULLVP;
++	struct vnode_attr va;
++	int error;
++
++	error = vnode_lookup("/dev/console", 0, &vp, vfs_context_kernel());
++	if (error || vp == NULLVP) {
++		printf("SWEET CON: lookup /dev/console failed (%d)\n", error);
++		return;
++	}
++	VATTR_INIT(&va);
++	VATTR_SET(&va, va_mode, 0666);
++	error = vnode_setattr(vp, &va, vfs_context_kernel());
++	printf("SWEET CON: chmod /dev/console 0666 -> %d\n", error);
++	vnode_put(vp);
++}
++
+ static void
+ sweet_log_thread(__unused void *arg, __unused wait_result_t wr)
+ {
+@@ -880,6 +903,9 @@
+ 			}
+ 			if (ticks >= 6 && (ticks % 3) == 0) {
+ 				sweet_dump_file();
++			}
++			if (ticks == 2) {
++				sweet_fix_console();
+ 			}
+ 			ticks++;
+ 		}

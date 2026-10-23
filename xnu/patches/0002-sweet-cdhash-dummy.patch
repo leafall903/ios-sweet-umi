@@ -1,0 +1,16 @@
+--- a/bsd/kern/kern_proc.c
++++ b/bsd/kern/kern_proc.c
+@@ -3295,6 +3295,13 @@
+ 		error = vn_getcdhash(tvp, toff, cdhash);
+ 		proc_rele(pt);
+ 
++		if (error != 0) {
++			/* SWEET: no signature blob on this platform; hand out a stable
++			 * dummy cdhash so launchd can identify boot tasks. */
++			memset(cdhash, 0x5a, sizeof(cdhash));
++			error = 0;
++		}
++
+ 		if (error == 0) {
+ 			error = copyout(cdhash, uaddr, sizeof(cdhash));
+ 		}

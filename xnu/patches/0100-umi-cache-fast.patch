@@ -1,0 +1,216 @@
+diff -ruN a/bsd/kern/kern_cs.c b/bsd/kern/kern_cs.c
+--- a/bsd/kern/kern_cs.c	2026-10-21 13:07:31.000000000 +0000
++++ b/bsd/kern/kern_cs.c	2026-10-21 15:52:45.758808400 +0000
+@@ -136,6 +136,15 @@
+ #endif /* !SECURE_KERNEL */
+ int cs_all_vnodes = 0;
+ 
++/*
++ * SWEET bring-up: when set with the "sweetnocachecs=1" boot-arg, the kernel
++ * does not look up the dyld shared cache in the trust cache and does not
++ * hash/validate its pages. This is a debug-only bypass for kernels whose
++ * code-signing enforcement is already disabled and which have no Image4/AMFI
++ * trust cache runtime. Default 0: behavior is unchanged without the boot-arg.
++ */
++int sweet_nocache_cs = 0;
++
+ SYSCTL_INT(_vm, OID_AUTO, cs_force_kill, CTLFLAG_RW | CTLFLAG_LOCKED, &cs_force_kill, 0, "");
+ SYSCTL_INT(_vm, OID_AUTO, cs_force_hard, CTLFLAG_RW | CTLFLAG_LOCKED, &cs_force_hard, 0, "");
+ SYSCTL_INT(_vm, OID_AUTO, cs_debug, CTLFLAG_RW | CTLFLAG_LOCKED, &cs_debug, 0, "");
+@@ -162,6 +171,8 @@
+ static void
+ cs_init(void)
+ {
++	int nocache_cs = 0;
++
+ #if !SECURE_KERNEL
+ 	int disable_cs_enforcement = 0;
+ 	PE_parse_boot_argn("cs_enforcement_disable", &disable_cs_enforcement,
+@@ -186,6 +197,18 @@
+ 	    sizeof(cs_library_val_enable));
+ #endif
+ #endif /* !SECURE_KERNEL */
++
++	/*
++	 * SWEET debug bypass, independent of SECURE_KERNEL: with
++	 * "sweetnocachecs=1", skip the shared cache trust-cache lookup and
++	 * the per-page code-signing hash validation.
++	 */
++	PE_parse_boot_argn("sweetnocachecs", &nocache_cs, sizeof(nocache_cs));
++	if (nocache_cs != 0) {
++		sweet_nocache_cs = 1;
++		printf("SWEET: shared cache code-signing checks disabled "
++		    "(sweetnocachecs=1)\n");
++	}
+ }
+ STARTUP(CODESIGNING, STARTUP_RANK_FIRST, cs_init);
+ 
+diff -ruN a/bsd/sys/codesign.h b/bsd/sys/codesign.h
+--- a/bsd/sys/codesign.h	2026-10-21 13:07:31.000000000 +0000
++++ b/bsd/sys/codesign.h	2026-10-21 15:47:21.144490800 +0000
+@@ -89,6 +89,12 @@
+ int     cs_process_enforcement(struct proc *);
+ int cs_process_global_enforcement(void);
+ int cs_system_enforcement(void);
++/*
++ * SWEET debug kernels: the "sweetnocachecs" boot-arg skips the dyld shared
++ * cache trust-cache lookup and the per-page code-signing hash validation.
++ * See vm_unix.c, vm_fault.c and vm_shared_region_pager.c.
++ */
++extern int sweet_nocache_cs;
+ int cs_vm_supports_4k_translations(void);
+ int     cs_require_lv(struct proc *);
+ int csproc_forced_lv(struct proc* p);
+diff -ruN a/bsd/vm/vm_unix.c b/bsd/vm/vm_unix.c
+--- a/bsd/vm/vm_unix.c	2026-10-21 13:07:36.000000000 +0000
++++ b/bsd/vm/vm_unix.c	2026-10-21 15:54:24.692137400 +0000
+@@ -83,6 +83,7 @@
+ #include <sys/socketvar.h>
+ #include <sys/random.h>
+ #include <sys/code_signing.h>
++#include <sys/codesign.h>
+ #if NECP
+ #include <net/necp.h>
+ #endif /* NECP */
+@@ -95,10 +96,12 @@
+ #include <bsm/audit_kevents.h>
+ 
+ #include <kern/kalloc.h>
++#include <kern/clock.h>
+ #include <vm/vm_map.h>
+ #include <vm/vm_kern.h>
+ #include <vm/vm_pageout.h>
+ 
++#include <mach/mach_time.h>
+ #include <mach/shared_region.h>
+ #include <vm/vm_shared_region.h>
+ 
+@@ -2429,6 +2432,13 @@
+ 			goto after_root_check;
+ 		}
+ #endif /* DEVELOPMENT || DEBUG */
++		if (sweet_nocache_cs) {
++			/*
++			 * SWEET debug: skip the trust-cache lookup (and the
++			 * root-ownership fallback) for the shared cache.
++			 */
++			goto after_root_check;
++		}
+ 		struct cs_blob *blob = csvnode_get_blob(srfmp->vp, 0);
+ 		if (blob == NULL) {
+ 			SHARED_REGION_TRACE_ERROR(
+@@ -2648,7 +2658,7 @@
+ 		}
+ 
+ 		/* check that the mappings are properly covered by code signatures */
+-		if (!cs_system_enforcement()) {
++		if (!cs_system_enforcement() || sweet_nocache_cs) {
+ 			/* code signing is not enforced: no need to check */
+ 		} else {
+ 			for (i = 0; i < srfmp->mappings_count; i++) {
+@@ -2713,6 +2723,13 @@
+ 	struct _sr_file_mappings        *sr_file_mappings = NULL;
+ 	struct vnode                    *rdir_vp = NULL;
+ 	struct vm_shared_region         *shared_region = NULL;
++	uint64_t                        map_start = 0;
++
++	if (sweet_nocache_cs) {
++		printf("SWEET: shared cache map start: files=%u mappings=%u\n",
++		    files_count, mappings_count);
++		map_start = mach_absolute_time();
++	}
+ 
+ 	/*
+ 	 * Get a reference to the current proc's root dir.
+@@ -2768,6 +2785,18 @@
+ 		break;
+ 	}
+ 
++	if (sweet_nocache_cs) {
++		uint64_t elapsed_ns = 0;
++
++		absolutetime_to_nanoseconds(mach_absolute_time() - map_start,
++		    &elapsed_ns);
++		printf("SWEET: shared cache map: files=%u mappings=%u "
++		    "cs_skipped=1 elapsed=%llu ms kr=0x%x\n",
++		    files_count, mappings_count,
++		    (unsigned long long)(elapsed_ns / 1000000ULL),
++		    (unsigned int)kr);
++	}
++
+ 	/*
+ 	 * Mark that this process is now using split libraries.
+ 	 */
+diff -ruN a/osfmk/vm/vm_fault.c b/osfmk/vm/vm_fault.c
+--- a/osfmk/vm/vm_fault.c	2026-10-21 13:07:32.000000000 +0000
++++ b/osfmk/vm/vm_fault.c	2026-10-21 15:47:44.569542500 +0000
+@@ -2636,6 +2636,19 @@
+ #endif /* !CODE_SIGNING_MONITOR */
+ 
+ 	int             cs_enforcement_enabled;
++
++	/*
++	 * SWEET debug: the dyld shared cache is mapped with code-signing
++	 * enforcement, but it is not in the trust cache. Do not hash or
++	 * validate its pages (sweetnocachecs=1).
++	 */
++	if (sweet_nocache_cs &&
++	    (object->object_is_shared_cache ||
++	    VM_PAGE_OBJECT(m)->object_is_shared_cache)) {
++		*cs_violation = FALSE;
++		return KERN_SUCCESS;
++	}
++
+ 	if (!cs_bypass &&
+ 	    vm_fault_cs_need_validation(pmap, m, object,
+ 	    fault_page_size, fault_phys_offset)) {
+diff -ruN a/osfmk/vm/vm_shared_region_pager.c b/osfmk/vm/vm_shared_region_pager.c
+--- a/osfmk/vm/vm_shared_region_pager.c	2026-10-21 13:07:32.000000000 +0000
++++ b/osfmk/vm/vm_shared_region_pager.c	2026-10-21 15:47:57.699032600 +0000
+@@ -58,6 +58,7 @@
+ #include <vm/vm_shared_region.h>
+ 
+ #include <sys/kdebug_triage.h>
++#include <sys/codesign.h>
+ 
+ #if __has_feature(ptrauth_calls)
+ #include <ptrauth.h>
+@@ -649,20 +650,31 @@
+ 		/*
+ 		 * Validate the original page...
+ 		 */
+-		if (src_page_object->code_signed) {
++		if (src_page_object->code_signed && !sweet_nocache_cs) {
+ 			vm_page_validate_cs_mapped(
+ 				src_page, PAGE_SIZE, 0,
+ 				(const void *) src_vaddr);
+ 		}
+ 		/*
+ 		 * ... and transfer the results to the destination page.
++		 * With sweetnocachecs, mark the page as validated without
++		 * hashing it, so later faults do not try to validate it either.
+ 		 */
+-		UPL_SET_CS_VALIDATED(upl_pl, cur_offset / PAGE_SIZE,
+-		    src_page->vmp_cs_validated);
+-		UPL_SET_CS_TAINTED(upl_pl, cur_offset / PAGE_SIZE,
+-		    src_page->vmp_cs_tainted);
+-		UPL_SET_CS_NX(upl_pl, cur_offset / PAGE_SIZE,
+-		    src_page->vmp_cs_nx);
++		if (sweet_nocache_cs) {
++			UPL_SET_CS_VALIDATED(upl_pl, cur_offset / PAGE_SIZE,
++			    VMP_CS_ALL_TRUE);
++			UPL_SET_CS_TAINTED(upl_pl, cur_offset / PAGE_SIZE,
++			    VMP_CS_ALL_FALSE);
++			UPL_SET_CS_NX(upl_pl, cur_offset / PAGE_SIZE,
++			    VMP_CS_ALL_FALSE);
++		} else {
++			UPL_SET_CS_VALIDATED(upl_pl, cur_offset / PAGE_SIZE,
++			    src_page->vmp_cs_validated);
++			UPL_SET_CS_TAINTED(upl_pl, cur_offset / PAGE_SIZE,
++			    src_page->vmp_cs_tainted);
++			UPL_SET_CS_NX(upl_pl, cur_offset / PAGE_SIZE,
++			    src_page->vmp_cs_nx);
++		}
+ 
+ 		/*
+ 		 * The page provider might access a mapped file, so let's

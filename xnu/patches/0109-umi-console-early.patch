@@ -1,0 +1,39 @@
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -1072,6 +1072,28 @@
+ 	bsd_init_kprintf("done\n");
+ }
+ 
++/* launchd opens StandardOutPath=/dev/console for daemons that run as user 501;
++ * the node is 0600 root, so that open fails with EACCES and posix_spawn fails
++ * for every service. Make it world writable before launchd is started. */
++static void
++sweet_console_world_writable(void)
++{
++	vnode_t vp = NULLVP;
++	struct vnode_attr va;
++	int error;
++
++	error = vnode_lookup("/dev/console", 0, &vp, vfs_context_kernel());
++	if (error || vp == NULLVP) {
++		printf("SWEET CON: early lookup /dev/console failed (%d)\n", error);
++		return;
++	}
++	VATTR_INIT(&va);
++	VATTR_SET(&va, va_mode, 0666);
++	error = vnode_setattr(vp, &va, vfs_context_kernel());
++	printf("SWEET CON: early chmod /dev/console 0666 -> %d\n", error);
++	vnode_put(vp);
++}
++
+ void
+ bsdinit_task(void)
+ {
+@@ -1098,6 +1120,7 @@
+ 
+ 	bsd_init_kprintf("bsd_do_post - done");
+ 
++	sweet_console_world_writable();
+ 	load_init_program(p);
+ 	lock_trace = 1;
+ }

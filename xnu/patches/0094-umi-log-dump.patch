@@ -1,0 +1,59 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -776,6 +776,48 @@
+ 	}
+ }
+ 
++/* Print the last block of the previous session's persistent log. */
++static void
++sweet_log_dump(void)
++{
++	uint64_t base = su.first_block + su.nblocks - SWEET_LOG_BLOCKS;
++	uint8_t *bounce = (uint8_t *)(su.dma + DMA_BOUNCE);
++	struct sweet_log_header *h = (struct sweet_log_header *)bounce;
++	char line[80];
++	uint32_t n = 0;
++
++	if (!su.writable || ufs_read_blocks(base, 1)) {
++		return;
++	}
++	if (h->magic[0] != 'S' || h->magic[7] != 'G' || h->size == 0 ||
++	    h->size > SWEET_LOG_SIZE || h->total == 0) {
++		return;
++	}
++	uint64_t last = (h->total - 1) / UFS_BLOCK % (h->size / UFS_BLOCK);
++	if (ufs_read_blocks(base + 1 + last, 1)) {
++		return;
++	}
++	printf("SWEET LOG: previous session tail (total %llu):\n", h->total);
++	for (uint32_t i = 0; i < UFS_BLOCK; i++) {
++		char c = (char)bounce[i];
++		if (c == '\n' || n >= sizeof(line) - 1) {
++			line[n] = 0;
++			if (n) {
++				printf("%s\n", line);
++			}
++			n = 0;
++			continue;
++		}
++		if (c >= 32 && c < 127) {
++			line[n++] = c;
++		}
++	}
++	if (n) {
++		line[n] = 0;
++		printf("%s\n", line);
++	}
++}
++
+ static void
+ sweet_log_start(void)
+ {
+@@ -790,6 +832,7 @@
+ 	if (sweet_log_secs == 0 || sweet_log_secs > 60) {
+ 		sweet_log_secs = SWEET_LOG_SECS;
+ 	}
++	sweet_log_dump();
+ 	if (kernel_thread_start(sweet_log_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}

@@ -1,0 +1,20 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -737,6 +737,8 @@
+ 	    SWEET_LOG_BLOCKS * UFS_BLOCK >> 10, base);
+ 	for (;;) {
+ 		(void)tsleep(&sweet_log_chan, PZERO, "sweetlog", hz * (int)sweet_log_secs);
++		/* SWEET: heartbeat so we can tell a live kernel from a dead console. */
++		printf("SWEET TICK %llu\n", (unsigned long long)mach_absolute_time());
+ 		uint64_t total = os_atomic_load(&sweet_log_total, relaxed);
+ 		if (total == flushed) {
+ 			continue;
+@@ -798,7 +800,7 @@
+ 		return;
+ 	}
+ 	printf("SWEET LOG: previous session tail (total %llu):\n", h->total);
+-	for (uint32_t i = 0; i < UFS_BLOCK; i++) {
++	for (uint32_t i = UFS_BLOCK - 512; i < UFS_BLOCK; i++) {
+ 		char c = (char)bounce[i];
+ 		if (c == '\n' || n >= sizeof(line) - 1) {
+ 			line[n] = 0;

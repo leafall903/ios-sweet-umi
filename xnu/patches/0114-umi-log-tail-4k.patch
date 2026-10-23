@@ -1,0 +1,38 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -796,7 +796,7 @@
+ }
+ 
+ /* Capture the tail of the previous session's persistent log. */
+-static char sweet_log_prev[512];
++static char sweet_log_prev[4096];
+ static uint32_t sweet_log_prev_len;
+ static bool sweet_log_prev_valid;
+ 
+@@ -824,7 +824,7 @@
+ 	if (ufs_read_blocks(base + 1 + last, 1)) {
+ 		return;
+ 	}
+-	memcpy(sweet_log_prev, bounce + UFS_BLOCK - 512, sizeof(sweet_log_prev));
++	memcpy(sweet_log_prev, bounce, MIN(sizeof(sweet_log_prev), (size_t)UFS_BLOCK));
+ 	sweet_log_prev_len = sizeof(sweet_log_prev);
+ 	sweet_log_prev_valid = true;
+ }
+@@ -857,7 +857,7 @@
+ 		line[n] = 0;
+ 		printf("%s\n", line);
+ 	}
+-	sweet_log_prev_valid = false;
++	/* keep it valid so the next heartbeats print it again */
+ }
+ 
+ static void
+@@ -875,7 +875,7 @@
+ 		printf("SWEET TICK %llu\n", (unsigned long long)mach_absolute_time());
+ 		{
+ 			static uint32_t ticks;
+-			if (sweet_log_prev_valid && ticks < 3) {
++			if (sweet_log_prev_valid && ticks < 6) {
+ 				sweet_log_prev_print();
+ 			}
+ 			if (ticks >= 6 && (ticks % 3) == 0) {

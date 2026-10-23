@@ -1,0 +1,182 @@
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -1317,6 +1317,14 @@
+ 	lret = load_machfile(imgp, mach_header, thread, &map, &load_result);
+ 	if (lret != LOAD_SUCCESS) {
+ 		error = load_return_to_errno(lret);
++		/* SWEET: said here, the load_return_t is the only thing that tells
++		 * LOAD_PROTECT (EACCES) from every other way an image is refused. */
++		printf("SWEET LM: pid=%d lret=%d errno=%d name=%s mnt=0x%x opaque=%d ctxuid=%d\n",
++		    proc_getpid(p), lret, error,
++		    (imgp->ip_vp != NULL && imgp->ip_vp->v_name != NULL) ? imgp->ip_vp->v_name : "?",
++		    (imgp->ip_vp != NULL) ? imgp->ip_vp->v_mount->mnt_flag : 0,
++		    (imgp->ip_vp != NULL) ? vfs_authopaque(imgp->ip_vp->v_mount) : 0,
++		    (int)kauth_cred_getuid(vfs_context_ucred(imgp->ip_vfs_context)));
+ 
+ 		KERNEL_DEBUG_CONSTANT(BSDDBG_CODE(DBG_BSD_PROC, BSD_PROC_EXITREASON_CREATE) | DBG_FUNC_NONE,
+ 		    proc_getpid(p), OS_REASON_EXEC, EXEC_EXIT_REASON_BAD_MACHO, 0, 0);
+@@ -2172,6 +2180,10 @@
+ 		if (error == ERESTART) {
+ 			error = EINTR;
+ 		}
++		/* SWEET: the first thing an exec can be refused for, and the one
++		 * place an EACCES does not come from a vnode authorization. */
++		printf("SWEET NA: pid=%d error=%d path=%s\n",
++		    proc_getpid(p), error, excpath != NULL ? excpath : "?");
+ 		goto bad_notrans;
+ 	}
+ 	imgp->ip_ndp = ndp;     /* successful namei(); call nameidone() later */
+@@ -2702,6 +2714,16 @@
+ 
+ 			AUDIT_SUBCALL_EXIT(uthread, error);
+ 
++			/* SWEET: launchd opens the standard streams of every job here
++			 * (as /dev/null unless the job says otherwise); the path and the
++			 * credential are the whole story of a refusal. */
++			if (error) {
++				printf("SWEET FA: pid=%d fd=%d path=%s error=%d cuid=%d\n",
++				    proc_getpid(p), psfa->psfaa_filedes,
++				    (const char *)(uintptr_t)psfa->psfaa_openargs.psfao_path, error,
++				    (int)kauth_cred_getuid(vfs_context_ucred(imgp->ip_vfs_context)));
++			}
++
+ 			/*
+ 			 * If there's an error, or we get the right fd by
+ 			 * accident, then drop out here.  This is easier than
+@@ -3076,10 +3098,17 @@
+ 	int error = 0;
+ 	struct persona *persona = NULL;
+ 
+-	if (!IOCurrentTaskHasEntitlement( PERSONA_MGMT_ENTITLEMENT)) {
+-		return EPERM;
+-	}
+-
++	/*
++	 * SWEET: two checks upstream makes here cannot be passed in this port.
++	 * PERSONA_MGMT_ENTITLEMENT is carried by nobody (nothing is signed and
++	 * AMFI is a stand-in), and no persona object exists -- kpersona_alloc()
++	 * asks for the same entitlement, so launchd's own probe is answered
++	 * ESRCH ("kpersona_find_by_type() failed ... No such process"). Kept as
++	 * upstream had it, either check refuses the whole posix_spawn() before
++	 * the program is ever started: EPERM or ESRCH instead of running it.
++	 * What still means something -- the size of the group list -- stays.
++	 * See spawn_persona_adopt() for what the missing persona then means.
++	 */
+ 	if (px_persona->pspi_flags & POSIX_SPAWN_PERSONA_GROUPS) {
+ 		if (px_persona->pspi_ngroups > NGROUPS_MAX) {
+ 			return EINVAL;
+@@ -3087,12 +3116,6 @@
+ 	}
+ 
+ 	persona = persona_lookup(px_persona->pspi_id);
+-	if (!persona) {
+-		error = ESRCH;
+-		goto out;
+-	}
+-
+-out:
+ 	if (persona) {
+ 		persona_put(persona);
+ 	}
+@@ -3112,9 +3135,6 @@
+ 	 * the kauth with a different UID/GID combo
+ 	 */
+ 	persona = persona_lookup(px_persona->pspi_id);
+-	if (!persona) {
+-		return ESRCH;
+-	}
+ 
+ 	cred = kauth_cred_proc_ref(p);
+ 
+@@ -3138,6 +3158,51 @@
+ 		    px_persona->pspi_groups,
+ 		    px_persona->pspi_ngroups,
+ 		    px_persona->pspi_gmuid);
++	}
++
++	if (persona == NULL) {
++		/*
++		 * SWEET: there are no personas in this port. What the caller is
++		 * after is the credential, not the persona, so the credential is
++		 * what it gets: the uid, gid and groups it asked for, set on the
++		 * process being spawned. (The same decision HackiOS reached for
++		 * the same reason; without it the spawn dies with ESRCH here and
++		 * nothing is ever started.)
++		 *
++		 * The count of processes per real uid follows, as
++		 * persona_proc_adopt() keeps it: fork1() counted the new process
++		 * under the parent's uid, its exit takes it off under the one it
++		 * has then. Without that, root's count is decremented for
++		 * processes that were never added, and "chgproccnt: lost user"
++		 * panics the kernel.
++		 */
++		static int sweet_persona_logged;
++		__block kauth_cred_t new_cred = cred;
++		__block uid_t old_ruid = KAUTH_UID_NONE;
++		uid_t new_ruid = kauth_cred_getruid(cred);
++
++		if (sweet_persona_logged++ < 16) {
++			printf("SWEET PER: pid=%d persona %d absent: cred only "
++			    "(uid %d gid %d flags 0x%x)\n",
++			    proc_getpid(p), (int)px_persona->pspi_id,
++			    (int)px_persona->pspi_uid, (int)px_persona->pspi_gid,
++			    px_persona->pspi_flags);
++		}
++
++		(void)proc_update_label(p, true, ^kauth_cred_t (kauth_cred_t cur_cred) {
++			old_ruid = kauth_cred_getruid(cur_cred);
++			if (new_cred != cur_cred) {
++			        kauth_cred_ref(new_cred);
++			        kauth_cred_unref(&cur_cred);
++			}
++			return new_cred;
++		});
++		kauth_cred_unref(&cred);
++		if (old_ruid != KAUTH_UID_NONE && old_ruid != new_ruid) {
++			(void)chgproccnt(new_ruid, 1);
++			(void)chgproccnt(old_ruid, -1);
++		}
++		return 0;
+ 	}
+ 
+ 	ret = persona_proc_adopt(p, persona, cred);
+--- a/bsd/kern/kern_persona.c
++++ b/bsd/kern/kern_persona.c
+@@ -712,17 +712,26 @@
+ 
+ 	if (new_uid != 0 &&
+ 	    (rlim_t)chgproccnt(new_uid, 0) > nproc) {
+-		pna_err("PID:%d hit proc rlimit in new persona(%d): %s",
+-		    proc_getpid(p), new_uid, persona_desc(persona, 1));
+-
+-		*rlim_error = EACCES;
+-
+-		if (old_persona) {
+-			(void)proc_reset_persona_internal(p, PROC_RESET_OLD_PERSONA,
+-			    old_persona, persona);
+-		}
+-
+-		return NULL;
++		/*
++		 * SWEET: upstream refuses the adoption with EACCES here, and the
++		 * refusal reaches posix_spawn() instead of the process being
++		 * started ("hit proc rlimit in new persona"). The count is not a
++		 * reason to refuse on this port: every process is counted under
++		 * the uid it happens to have, iOS's launchd sets RLIMIT_NPROC for
++		 * its jobs and this one is inherited from kernel_task, and the
++		 * only user of personas here would be a caller asking for a uid
++		 * it could not otherwise get. Say it once, adopt anyway -- the
++		 * credential switch below is what the caller came for, and
++		 * chgproccnt() is still kept in step further down.
++		 */
++		static int sweet_rlim_logged;
++		if (sweet_rlim_logged++ < 8) {
++			printf("SWEET PER: pid=%d uid %d over RLIMIT_NPROC "
++			    "(count %lu, limit %llu): allowed\n",
++			    proc_getpid(p), (int)new_uid,
++			    (unsigned long)chgproccnt(new_uid, 0),
++			    (unsigned long long)nproc);
++		}
+ 	}
+ 
+ 	*rlim_error = 0;

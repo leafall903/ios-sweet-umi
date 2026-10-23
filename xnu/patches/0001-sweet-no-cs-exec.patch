@@ -1,0 +1,15 @@
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -7338,6 +7338,12 @@
+ 	const int vfexec = 0;
+ 	os_reason_t signature_failure_reason = OS_REASON_NULL;
+ 
++	/* SWEET: skip code signing enforcement, treat every executable as a
++	 * platform binary and keep it valid, for the umi research bring-up.
++	 * No per-exec print: it floods the console and the persistent log. */
++	proc_csflags_set(p, CS_SIGNED | CS_PLATFORM_BINARY | CS_VALID);
++	return 0;
++
+ 	/*
+ 	 * Override inherited code signing flags with the
+ 	 * ones for the process that is being successfully

@@ -1,0 +1,28 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -892,12 +892,20 @@
+ 			static uint32_t hb;
+ 			PE_Video video;
+ 			PE_current_console(&video);
+-			if (video.v_baseAddr && video.v_rowBytes && video.v_height > 16) {
+-				uint32_t *row = (uint32_t *)(video.v_baseAddr +
+-				    (uint64_t)(video.v_height - 160) * video.v_rowBytes);
++			if (video.v_baseAddr && video.v_rowBytes && video.v_height > 300) {
++				/* A thick colour block near the top: the curved panel hides
++				 * the bottom rows, and this path does not take the console
++				 * lock, so it keeps moving even if the console is wedged. */
++				uint32_t colours[4] = { 0x00ff00ff, 0x0000ffff,
++				    0x00ff0000, 0x0000ff00 };
++				uint32_t c = colours[hb & 3];
+ 				uint32_t w = video.v_rowBytes / 4;
+-				for (uint32_t x = 0; x < w; x++) {
+-					row[x] = (((x / 8) + hb) & 3) == 0 ? 0x00ff00ff : 0;
++				for (uint32_t y = 40; y < 120; y++) {
++					uint32_t *row = (uint32_t *)(video.v_baseAddr +
++					    (uint64_t)y * video.v_rowBytes);
++					for (uint32_t x = 0; x < w; x++) {
++						row[x] = ((x / 32) + hb) & 1 ? c : 0;
++					}
+ 				}
+ 				hb++;
+ 			}

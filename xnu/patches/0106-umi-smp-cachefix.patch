@@ -1,0 +1,359 @@
+--- a/iokit/Kernel/arm/SweetCPU.cpp
++++ b/iokit/Kernel/arm/SweetCPU.cpp
+@@ -18,10 +18,46 @@
+ #include <mach/mach_time.h>
+ #include <pexpert/pexpert.h>
+ 
++/*
++ * <arm/caches_internal.h> is a C header without an extern "C" wrapper: it
++ * would give these C functions C++ linkage here, so declare the one we use
++ * instead.  gVirtBase/gPhysBase are only declared by <mach/vm_param.h> for
++ * MACH_KERNEL_PRIVATE builds, which the iokit is not.
++ */
++extern "C" {
++void FlushPoC_DcacheRegion(vm_offset_t va, size_t length);
++extern unsigned long gVirtBase, gPhysBase;
++}
++
+ extern "C" void sweet_secondary_entry(void);
+ extern "C" boolean_t sweet_cpu_signal_is_enabled(unsigned int cpu);
+ extern "C" uint32_t sweet_cpu_signal_raw(unsigned int cpu);
+ 
++/*
++ * Left by a CPU that takes an exception between its first instruction and
++ * the point where common_start installs the kernel's vectors
++ * (Lsecondary_early_exception in start.s; that CPU then switches itself
++ * off).  It has a cache line to itself: the writer has its caches off, and
++ * the processor that started it reads the note back from memory.
++ */
++extern "C" {
++struct sweet_smp_early_fault {
++	uint64_t        valid;          /* 1 once the fields below are written */
++	uint64_t        mpidr;
++	uint64_t        esr;
++	uint64_t        elr;
++	uint64_t        far;
++	uint64_t        lr;
++	uint64_t        sp;
++	uint64_t        spare;
++	uint64_t        pad[8];         /* fields keep a cache line to themselves */
++};
++
++struct sweet_smp_early_fault sweet_smp_start_fault __attribute__((aligned(128)));
++}
++
++static_assert(sizeof(struct sweet_smp_early_fault) == 128, "one cache line");
++
+ class SweetCPU;
+ static SweetCPU *sweet_cpus[MAX_CPUS];
+ static uint32_t sweet_cpus_registered;
+@@ -52,6 +88,8 @@
+ static bool sweet_smp_irqwait = true;
+ static uint32_t sweet_smp_sgiwait_ms = 100;
+ static bool sweet_smp_sgireq = true;
++/* How long startCPU() waits for an early-fault note from the new CPU (ms). */
++static uint32_t sweet_smp_faultwait_ms = 500;
+ 
+ static void
+ sweet_parse_cpu_args(void)
+@@ -84,11 +122,15 @@
+ 	if (PE_parse_boot_argn("sweetsmp_sgireq", &value, sizeof(value))) {
+ 		sweet_smp_sgireq = (value != 0);
+ 	}
++	value = 500;
++	if (PE_parse_boot_argn("sweetsmp_faultwait_ms", &value, sizeof(value))) {
++		sweet_smp_faultwait_ms = value > 5000 ? 5000 : value;
++	}
+ 	kprintf("SWEET CPU: boot args: sweetaff1max=%u sweetsmp_tolerant=%u "
+-	    "irqwait=%u sgiwait_ms=%u sgireq=%u\n",
++	    "irqwait=%u sgiwait_ms=%u sgireq=%u faultwait_ms=%u\n",
+ 	    sweet_aff1_max, sweet_smp_tolerant ? 1u : 0u,
+ 	    sweet_smp_irqwait ? 1u : 0u, sweet_smp_sgiwait_ms,
+-	    sweet_smp_sgireq ? 1u : 0u);
++	    sweet_smp_sgireq ? 1u : 0u, sweet_smp_faultwait_ms);
+ }
+ 
+ static bool
+@@ -462,6 +504,16 @@
+ 		panic("SWEET CPU: cpu=%u unsupported restart", getCPUNumber());
+ 	}
+ 	vm_offset_t entry = ml_static_vtop((vm_offset_t)&sweet_secondary_entry);
++
++	/*
++	 * Forget any note from an earlier attempt and put the zero in memory.
++	 * cpu_start() has just cleaned the kernel segments and every cpu_data
++	 * for this core (osfmk/arm64/cpu.c), which is what the new core reads
++	 * with its MMU and caches off; all that is left to publish is this note.
++	 */
++	sweet_smp_start_fault.valid = 0;
++	FlushPoC_DcacheRegion((vm_offset_t)&sweet_smp_start_fault, sizeof(sweet_smp_start_fault));
++
+ 	/*
+ 	 * kprintf, not IOLog: if the SMC below never returns (firmware stuck on
+ 	 * that core/cluster) this line is the last thing the console ever shows,
+@@ -479,6 +531,45 @@
+ 		panic("SWEET CPU: cpu=%u NOT alive: PSCI CPU_ON rc=%d (mpidr=0x%x)",
+ 		    getCPUNumber(), rc, cpu->phys_id);
+ 	}
++
++	/*
++	 * From sweet_secondary_entry to common_start the new core runs with its
++	 * MMU and caches off.  An exception there leaves a note in
++	 * sweet_smp_start_fault (Lsecondary_early_exception) and switches the
++	 * core off; without this loop the only evidence would be startAll()'s
++	 * five-second timeout.  Read the note from memory, not from this
++	 * processor's copy of it.
++	 */
++	if (sweet_smp_faultwait_ms != 0) {
++		uint64_t deadline;
++
++		nanoseconds_to_deadline((uint64_t)sweet_smp_faultwait_ms * NSEC_PER_MSEC,
++		    &deadline);
++		do {
++			FlushPoC_DcacheRegion((vm_offset_t)&sweet_smp_start_fault,
++			    sizeof(sweet_smp_start_fault));
++			if (sweet_smp_start_fault.valid != 0) {
++				uint64_t to_virtual = (uint64_t)gVirtBase - (uint64_t)gPhysBase;
++				uint64_t esr = sweet_smp_start_fault.esr;
++
++				kprintf("SWEET SMP: CPU%u early fault ESR=0x%llx ELR=0x%llx "
++				    "FAR=0x%llx mpidr=0x%llx LR=0x%llx SP=0x%llx\n",
++				    getCPUNumber(), esr, sweet_smp_start_fault.elr,
++				    sweet_smp_start_fault.far, sweet_smp_start_fault.mpidr,
++				    sweet_smp_start_fault.lr, sweet_smp_start_fault.sp);
++				kprintf("SWEET SMP: cpu=%u early fault EC=0x%llx ISS=0x%llx "
++				    "ELR/LR as kernel VA 0x%llx/0x%llx: the core is off\n",
++				    getCPUNumber(), esr >> 26, esr & 0x3ffffffULL,
++				    sweet_smp_start_fault.elr + to_virtual,
++				    sweet_smp_start_fault.lr + to_virtual);
++				return KERN_FAILURE;
++			}
++			if (__atomic_load_n(&initialized, __ATOMIC_ACQUIRE) != 0) {
++				break;
++			}
++			delay_for_interval(1, NSEC_PER_MSEC);
++		} while (mach_absolute_time() < deadline);
++	}
+ 	return KERN_SUCCESS;
+ }
+ 
+--- a/osfmk/arm64/cpu.c
++++ b/osfmk/arm64/cpu.c
+@@ -38,6 +38,7 @@
+ #include <kern/percpu.h>
+ #include <kern/thread.h>
+ #include <kern/timer_queue.h>
++#include <libkern/kernel_mach_header.h>
+ #include <arm/cpu_data.h>
+ #include <arm/cpuid.h>
+ #include <arm/caches_internal.h>
+@@ -893,6 +894,29 @@
+ }
+ #endif
+ 
++#if defined(SWEET)
++/*
++ * A CPU started with PSCI CPU_ON reads the kernel through physical addresses
++ * with its MMU and caches off until common_start, so it reads *memory*: what
++ * the running processors have not written back yet is not there for it.
++ * Clean (not flush: the running processors keep using all of it) the
++ * segments that core reads in that state.  Called from cpu_start(), right
++ * before PE_cpu_start() enters SweetCPU::startCPU() and CPU_ON.
++ */
++static unsigned long
++sweet_smp_clean_segment(const char *name)
++{
++	unsigned long size = 0;
++	vm_offset_t start = (vm_offset_t)getsegdatafromheader(&_mh_execute_header, name, &size);
++
++	if (start == 0 || size == 0) {
++		return 0;
++	}
++	CleanPoC_DcacheRegion_Force(start, size);
++	return size;
++}
++#endif /* defined(SWEET) */
++
+ kern_return_t
+ cpu_start(int cpu)
+ {
+@@ -930,8 +954,24 @@
+ 		flush_dcache((vm_offset_t)&CpuDataEntries[cpu], sizeof(cpu_data_entry_t), FALSE);
+ 		flush_dcache((vm_offset_t)cpu_data_ptr, sizeof(cpu_data_t), FALSE);
+ #if defined(SWEET)
+-		/* The reset stub loads these through physical addresses with caches off.
+-		 * Use VA range cleans to PoC, including on coherent-I/O builds. */
++		/*
++		 * The reset stub loads these through physical addresses with caches
++		 * off.  Use VA range cleans to PoC, including on coherent-I/O builds.
++		 *
++		 * The new core also fetches the reset vector and common_start from
++		 * memory, and reads ResetHandlerData, CpuDataEntries and the
++		 * cpu_data of *every* processor (the reset vector walks the list
++		 * looking for its MPIDR).  Under Qualcomm's hypervisor a line that
++		 * is dirty in another core's cache is not in memory yet, so clean
++		 * the kernel segments and all cpu_data as well, and make it visible
++		 * before the core is started.
++		 */
++		static const char *const sweet_segments[] = {
++			"__TEXT", "__DATA_CONST", "__TEXT_EXEC", "__DATA", "__BOOTDATA",
++		};
++		unsigned int cleaned_segments = 0;
++		unsigned long cleaned_bytes = 0;
++		unsigned int cleaned_cpus = 0;
+ 		extern uint8_t bootstrap_pagetables[BOOTSTRAP_TABLE_SIZE];
+ 		CleanPoC_DcacheRegion_Force((vm_offset_t)CpuDataEntries, sizeof(CpuDataEntries));
+ 		CleanPoC_DcacheRegion_Force((vm_offset_t)cpu_data_ptr, sizeof(cpu_data_t));
+@@ -940,7 +980,27 @@
+ 		CleanPoC_DcacheRegion_Force((vm_offset_t)&sysreg_restore, sizeof(sysreg_restore));
+ 		CleanPoC_DcacheRegion_Force((vm_offset_t)&cpu_ttep, sizeof(cpu_ttep));
+ 		CleanPoC_DcacheRegion_Force((vm_offset_t)bootstrap_pagetables, BOOTSTRAP_TABLE_SIZE);
++		for (unsigned int s = 0;
++		    s < sizeof(sweet_segments) / sizeof(sweet_segments[0]); s++) {
++			unsigned long bytes = sweet_smp_clean_segment(sweet_segments[s]);
++
++			if (bytes != 0) {
++				cleaned_segments++;
++				cleaned_bytes += bytes;
++			}
++		}
++		for (int other = 0; other <= ml_get_max_cpu_number(); other++) {
++			cpu_data_t *other_cdp = cpu_datap(other);
++
++			if (other_cdp != NULL) {
++				CleanPoC_DcacheRegion_Force((vm_offset_t)other_cdp, sizeof(cpu_data_t));
++				cleaned_cpus++;
++			}
++		}
+ 		__builtin_arm_dsb(DSB_SY);
++		kprintf("SWEET SMP: cleaned kernel segments (%u/%u, %lu bytes) and %u cpu_data for cpu %d\n",
++		    cleaned_segments, (unsigned int)(sizeof(sweet_segments) / sizeof(sweet_segments[0])),
++		    cleaned_bytes, cleaned_cpus, cpu);
+ #endif
+ #if defined(KERNEL_INTEGRITY_CTRR)
+ 
+--- a/osfmk/arm64/start.s
++++ b/osfmk/arm64/start.s
+@@ -126,6 +126,26 @@
+ 	.globl EXT(reset_vector)
+ LEXT(reset_vector)
+ 	// Preserve x0 for start_first_cpu, if called
++#if defined(SWEET)
++	/*
++	 * A core started by PSCI CPU_ON has no vectors of its own, and under
++	 * Qualcomm's hypervisor (QHEE) even the OS lock write below can trap:
++	 * give it vectors first.  They record the exception and switch the
++	 * core off again (Lsecondary_early_exception); the processor waiting
++	 * for this core reads that note (SweetCPU::startCPU()).
++	 */
++	msr		DAIFSet, #(DAIFSC_ALL)				// Disable all interrupts
++	adrp	x0, EXT(LowSecondaryExceptionVectorBase)@page
++	add		x0, x0, EXT(LowSecondaryExceptionVectorBase)@pageoff
++	msr		VBAR_EL1, x0
++	isb
++	// PSCI says only that the MMU and the caches are off.
++	MOV64	x0, 0x30d00800					// SCTLR RES1 bits, M/C/I off
++	msr		SCTLR_EL1, x0
++	isb
++	// Unlock the core for debugging
++	msr		OSLAR_EL1, xzr
++#else
+ 	// Unlock the core for debugging
+ 	msr		OSLAR_EL1, xzr
+ 	msr		DAIFSet, #(DAIFSC_ALL)				// Disable all interrupts
+@@ -136,6 +156,7 @@
+ 	add     x0, x0, EXT(LowExceptionVectorBase)@pageoff
+ 	msr     VBAR_EL1, x0
+ #endif
++#endif /* defined(SWEET) */
+ 
+ 
+ 
+@@ -280,6 +301,87 @@
+ 
+ #endif /* defined(KERNEL_INTEGRITY_KTRR) || defined(KERNEL_INTEGRITY_CTRR) */
+ #if defined(SWEET)
++/*
++ * Early vectors for a core started with PSCI CPU_ON: in force from the first
++ * instruction of reset_vector until common_start installs the kernel's
++ * vectors.  An exception in that window has nowhere else to go (the MMU is
++ * off, and VBAR held whatever the firmware left there), so record what
++ * happened where the processor that started this core waits for it
++ * (SweetCPU::startCPU()) and switch this core off again.
++ *
++ * VBAR holds a physical address here, so PC-relative addressing yields the
++ * physical address of the note, which the new core wrote with its caches off.
++ */
++	.align 11
++	.globl EXT(LowSecondaryExceptionVectorBase)
++LEXT(LowSecondaryExceptionVectorBase)
++	/* EL1 SP 0 */
++	b		Lsecondary_early_exception
++	.align 7
++	b		Lsecondary_early_exception
++	.align 7
++	b		Lsecondary_early_exception
++	.align 7
++	b		Lsecondary_early_exception
++	/* EL1 SP1 */
++	.align 7
++	b		Lsecondary_early_exception
++	.align 7
++	b		Lsecondary_early_exception
++	.align 7
++	b		Lsecondary_early_exception
++	.align 7
++	b		Lsecondary_early_exception
++	/* EL0 64 */
++	.align 7
++	b		Lsecondary_early_exception
++	.align 7
++	b		Lsecondary_early_exception
++	.align 7
++	b		Lsecondary_early_exception
++	.align 7
++	b		Lsecondary_early_exception
++	/* EL0 32 */
++	.align 7
++	b		Lsecondary_early_exception
++	.align 7
++	b		Lsecondary_early_exception
++	.align 7
++	b		Lsecondary_early_exception
++	.align 7
++	b		Lsecondary_early_exception
++
++	.align 3
++Lsecondary_early_exception:
++	/* struct sweet_smp_early_fault: valid, MPIDR, ESR, ELR, FAR, LR, SP, - */
++	adrp	x9, EXT(sweet_smp_start_fault)@page
++	add		x9, x9, EXT(sweet_smp_start_fault)@pageoff
++	mrs		x10, MPIDR_EL1
++	str		x10, [x9, #8]
++	mrs		x10, ESR_EL1
++	str		x10, [x9, #16]
++	mrs		x10, ELR_EL1
++	str		x10, [x9, #24]
++	mrs		x10, FAR_EL1
++	str		x10, [x9, #32]
++	str		lr, [x9, #40]
++	mov		x10, sp
++	str		x10, [x9, #48]
++	dsb		sy					// fields before valid
++	mov		x10, #1
++	str		x10, [x9]
++	dc		cvac, x9
++	dsb		sy
++	/* PSCI CPU_OFF: x0 = function ID, x1-x3 zero (SMCCC calling convention). */
++	mov		x0, #0x0002
++	movk	x0, #0x8400, lsl #16
++	mov		x1, xzr
++	mov		x2, xzr
++	mov		x3, xzr
++	smc		#0
++	wfi
++	b		.
++
+ /* PSCI CPU_ON entry (physical): x0=context_id, no stack, MMU/caches off.
+  * Keep this separate from __start (which requires x0=boot_args PA).
+  * Firmware may return at EL1 or EL2; check before accessing EL1 state.

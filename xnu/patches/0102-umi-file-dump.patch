@@ -1,0 +1,93 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -27,6 +27,9 @@
+ #include <sys/errno.h>
+ #include <sys/proc.h>
+ #include <sys/uio.h>
++#include <sys/vnode.h>
++#include <sys/vnode_internal.h>
++#include <sys/kauth.h>
+ #include <miscfs/devfs/devfs.h>
+ #include <kern/locks.h>
+ #include <kern/clock.h>
+@@ -728,6 +731,70 @@
+ 	uint64_t total, seq;
+ };
+ 
++/* Print the tail of a file (boot-arg sweetdumpfile=PATH) to the console. */
++static char sweet_dump_buf[4096];
++
++static void
++sweet_dump_file(void)
++{
++	char path[128];
++	uint32_t want = 2048;
++	vnode_t vp = NULLVP;
++	off_t size = 0;
++	int error, resid = 0;
++
++	if (!PE_parse_boot_argn("sweetdumpfile", path, sizeof(path)) || !path[0]) {
++		return;
++	}
++	if (!PE_parse_boot_argn("sweetdumplen", &want, sizeof(want)) ||
++	    want == 0 || want > sizeof(sweet_dump_buf)) {
++		want = 2048;
++	}
++	error = vnode_lookup(path, 0, &vp, vfs_context_kernel());
++	if (error || vp == NULLVP) {
++		printf("SWEET DUMP: lookup %s failed (%d)\n", path, error);
++		return;
++	}
++	error = vnode_size(vp, &size, vfs_context_kernel());
++	if (error || size <= 0) {
++		printf("SWEET DUMP: %s size %lld error %d\n", path, (long long)size, error);
++		vnode_put(vp);
++		return;
++	}
++	off_t off = size > (off_t)want ? size - (off_t)want : 0;
++	error = vn_rdwr(UIO_READ, vp, (caddr_t)sweet_dump_buf, (int)want, off,
++	    UIO_SYSSPACE, IO_NODELOCKED, kauth_cred_get(), &resid, current_proc());
++	if (error) {
++		printf("SWEET DUMP: read %s failed (%d)\n", path, error);
++		vnode_put(vp);
++		return;
++	}
++	printf("SWEET DUMP: %s (size %lld, last %u bytes):\n", path, (long long)size, want);
++	{
++		char line[100];
++		uint32_t n = 0;
++		for (uint32_t i = 0; i < want; i++) {
++			char c = sweet_dump_buf[i];
++			if (c == '\n' || n >= sizeof(line) - 1) {
++				line[n] = 0;
++				if (n) {
++					printf("%s\n", line);
++				}
++				n = 0;
++				continue;
++			}
++			if (c >= 32 && c < 127) {
++				line[n++] = c;
++			}
++		}
++		if (n) {
++			line[n] = 0;
++			printf("%s\n", line);
++		}
++	}
++	vnode_put(vp);
++}
++
+ /* Capture the tail of the previous session's persistent log. */
+ static char sweet_log_prev[512];
+ static uint32_t sweet_log_prev_len;
+@@ -811,6 +878,9 @@
+ 			if (sweet_log_prev_valid && ticks < 3) {
+ 				sweet_log_prev_print();
+ 			}
++			if (ticks == 6) {
++				sweet_dump_file();
++			}
+ 			ticks++;
+ 		}
+ 		/*

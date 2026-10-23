@@ -1,0 +1,17 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -642,10 +642,12 @@
+ 	    want, su.lun, su.first_block, su.nblocks * UFS_BLOCK >> 20,
+ 	    su.writable ? "read-write" : "read-only", su.dma_pa);
+ 	sweet_log_start();
+-	/* SWEET: hardware bring-up hooks (sampler, keys, touch, USB) are staged
++	/* SWEET: the stack sampler is pure software; keep it running so a hung
++	 * SpringBoard/backboardd shows where it is stuck (0054). */
++	sweet_sample_start();
++	/* SWEET: hardware bring-up hooks (keys, touch, USB) are staged
+ 	 * separately; they hang while their buses are not initialized yet. */
+ #if 0
+-	sweet_sample_start();
+ 	sweet_keys_init();
+ 	sweet_touch_init();
+ 	sweet_usb_probe();

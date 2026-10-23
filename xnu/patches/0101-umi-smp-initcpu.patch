@@ -1,0 +1,483 @@
+--- a/iokit/Kernel/arm/SweetCPU.cpp
++++ b/iokit/Kernel/arm/SweetCPU.cpp
+@@ -20,6 +20,7 @@
+ 
+ extern "C" void sweet_secondary_entry(void);
+ extern "C" boolean_t sweet_cpu_signal_is_enabled(unsigned int cpu);
++extern "C" uint32_t sweet_cpu_signal_raw(unsigned int cpu);
+ 
+ class SweetCPU;
+ static SweetCPU *sweet_cpus[MAX_CPUS];
+@@ -47,6 +48,11 @@
+  */
+ static bool sweet_smp_tolerant;
+ 
++/* Secondary handshake diagnosis; see initCPU(), startAll() and the report. */
++static bool sweet_smp_irqwait = true;
++static uint32_t sweet_smp_sgiwait_ms = 100;
++static bool sweet_smp_sgireq = true;
++
+ static void
+ sweet_parse_cpu_args(void)
+ {
+@@ -66,8 +72,23 @@
+ 	if (PE_parse_boot_argn("sweetsmp_tolerant", &value, sizeof(value))) {
+ 		sweet_smp_tolerant = (value != 0);
+ 	}
+-	kprintf("SWEET CPU: boot args: sweetaff1max=%u sweetsmp_tolerant=%u\n",
+-	    sweet_aff1_max, sweet_smp_tolerant ? 1u : 0u);
++	value = 1;
++	if (PE_parse_boot_argn("sweetsmp_irqwait", &value, sizeof(value))) {
++		sweet_smp_irqwait = (value != 0);
++	}
++	value = 100;
++	if (PE_parse_boot_argn("sweetsmp_sgiwait_ms", &value, sizeof(value))) {
++		sweet_smp_sgiwait_ms = value > 5000 ? 5000 : value;
++	}
++	value = 1;
++	if (PE_parse_boot_argn("sweetsmp_sgireq", &value, sizeof(value))) {
++		sweet_smp_sgireq = (value != 0);
++	}
++	kprintf("SWEET CPU: boot args: sweetaff1max=%u sweetsmp_tolerant=%u "
++	    "irqwait=%u sgiwait_ms=%u sgireq=%u\n",
++	    sweet_aff1_max, sweet_smp_tolerant ? 1u : 0u,
++	    sweet_smp_irqwait ? 1u : 0u, sweet_smp_sgiwait_ms,
++	    sweet_smp_sgireq ? 1u : 0u);
+ }
+ 
+ static bool
+@@ -274,19 +295,36 @@
+ 			}
+ 			continue;
+ 		}
++		kprintf("SWEET SMP: cpu=%u processor_start returned %d DAIF=0x%llx\n",
++		    i, kr, __builtin_arm_rsr64("DAIF"));
+ 		/* processor_start() is asynchronous for secondaries in this XNU. */
+ 		bool alive = true;
+ 		nanoseconds_to_deadline(5 * NSEC_PER_SEC, &deadline);
++		uint64_t report = mach_absolute_time();
+ 		while (__atomic_load_n(&cpu->initialized, __ATOMIC_ACQUIRE) == 0 ||
+-		    !sweet_cpu_signal_is_enabled(i)) {
+-			if (mach_absolute_time() > deadline) {
++		    (sweet_smp_sgireq && !sweet_cpu_signal_is_enabled(i))) {
++			uint64_t now = mach_absolute_time();
++
++			if (now > deadline) {
+ 				alive = false;
+ 				break;
+ 			}
++			if (now >= report) {
++				kprintf("SWEET SMP: cpu=%u still starting initCPU=%u signal=0x%x now=%llu "
++				    "deadline=%llu\n", i,
++				    __atomic_load_n(&cpu->initialized, __ATOMIC_ACQUIRE),
++				    sweet_cpu_signal_raw(i), now, deadline);
++				nanoseconds_to_deadline(500 * NSEC_PER_MSEC, &report);
++			}
+ 			IOSleep(1);
+ 		}
+ 		if (!alive) {
+ 			failed++;
++			kprintf("SWEET SMP: cpu=%u wait timed out on cpu%u: initCPU=%u signal=0x%x "
++			    "sgireq=%u tolerant=%u\n", i, cpu_number(),
++			    __atomic_load_n(&cpu->initialized, __ATOMIC_ACQUIRE),
++			    sweet_cpu_signal_raw(i), sweet_smp_sgireq ? 1u : 0u,
++			    sweet_smp_tolerant ? 1u : 0u);
+ 			kprintf("SWEET CPU: cpu=%u aff1=%u mpidr=0x%x did NOT come up in 5s "
+ 			    "(initCPU=%u signal=%u)\n", i, tcpu->phys_id >> 8, tcpu->phys_id,
+ 			    __atomic_load_n(&cpu->initialized, __ATOMIC_ACQUIRE),
+@@ -301,15 +339,23 @@
+ 		    i, tcpu->phys_id, started, expected);
+ 	}
+ 	/* Publish exactly once, after every selected CPU has completed initCPU(). */
++	kprintf("SWEET SMP: %u alive, ml_cpu_init_completed next\n", started);
+ 	ml_cpu_init_completed();
++	kprintf("SWEET SMP: ml_cpu_init_completed returned\n");
+ 	SweetCPU *boot = __atomic_load_n(&sweet_cpus[topology->boot_cpu->cpu_id], __ATOMIC_ACQUIRE);
+ 	if (boot != NULL) {
++		kprintf("SWEET SMP: cpusRunning\n");
+ 		boot->cpusRunning();
+-	}
++		kprintf("SWEET SMP: cpusRunning returned\n");
++	}
++	kprintf("SWEET SMP: publishResource\n");
+ 	IOService::publishResource(gIOAllCPUInitializedKey, kOSBooleanTrue);
++	kprintf("SWEET SMP: publishResource returned\n");
+ 	ml_set_max_cpus(topology->max_cpu_id + 1);
++	kprintf("SWEET SMP: ml_set_max_cpus(%u) returned\n", topology->max_cpu_id + 1);
+ 	kprintf("SWEET CPU: %u/%u CPUs initialized, SGI1 verified (failed=%u)\n",
+ 	    started, expected, failed);
++	kprintf("SWEET SMP: startAll terminating its thread\n");
+ 	thread_terminate(current_thread());
+ }
+ 
+@@ -328,18 +374,59 @@
+ 	}
+ 	assert(cpu_number() == (int)getCPUNumber());
+ 
++	sweet_parse_cpu_args();
++
++	kprintf("SWEET SMP: cpu=%u initCPU enter DAIF=0x%llx signal=0x%x\n",
++	    getCPUNumber(), __builtin_arm_rsr64("DAIF"),
++	    sweet_cpu_signal_raw(getCPUNumber()));
++
+ 	ml_broadcast_cpu_event(CPU_BOOTED, getCPUNumber());
++	kprintf("SWEET SMP: cpu=%u broadcast CPU_BOOTED done\n", getCPUNumber());
+ 
+ 	/* Secondary startup runs at splsched: queue the self-IPI and return.
+ 	 * startAll waits for its delivery after the startup thread unmasks IRQs.
+ 	 * Waiting here with DAIF.I set would deadlock every secondary. */
+ 	signalCPU(this);
++	kprintf("SWEET SMP: cpu=%u self-SGI queued signal=0x%x\n",
++	    getCPUNumber(), sweet_cpu_signal_raw(getCPUNumber()));
++
++	/*
++	 * While DAIF.I is set the SGI stays pending, so nothing proves that this
++	 * CPU can take an interrupt until the idle thread later calls spllo().
++	 * Open DAIF here for a bounded window instead: either the SGI arrives and
++	 * SIGPdisabled is cleared before we return, or the log says it did not.
++	 */
++	if (sweet_smp_irqwait && !ml_get_interrupts_enabled()) {
++		uint64_t start = mach_absolute_time();
++		uint64_t deadline;
++
++		(void)ml_set_interrupts_enabled(TRUE);
++		nanoseconds_to_deadline(sweet_smp_sgiwait_ms * NSEC_PER_MSEC, &deadline);
++		while (!sweet_cpu_signal_is_enabled(getCPUNumber()) &&
++		    mach_absolute_time() < deadline) {
++			__asm__ volatile("yield");
++		}
++		(void)ml_set_interrupts_enabled(FALSE);
++		kprintf("SWEET SMP: cpu=%u self-SGI %s after %llu us signal=0x%x DAIF=0x%llx\n",
++		    getCPUNumber(),
++		    sweet_cpu_signal_is_enabled(getCPUNumber()) ? "DELIVERED" : "NOT DELIVERED",
++		    (mach_absolute_time() - start) / 1000ULL,
++		    sweet_cpu_signal_raw(getCPUNumber()),
++		    __builtin_arm_rsr64("DAIF"));
++	} else {
++		kprintf("SWEET SMP: cpu=%u IRQ window skipped (irqwait=%u IRQs=%u)\n",
++		    getCPUNumber(), sweet_smp_irqwait ? 1u : 0u,
++		    ml_get_interrupts_enabled() ? 1u : 0u);
++	}
++
+ 	setCPUState(kIOCPUStateRunning);
+ 	uint64_t mpidr = __builtin_arm_rsr64("MPIDR_EL1");
+ 	kprintf("SWEET CPU: cpu=%u entered initCPU mpidr=0x%llx aff1=%llu EL%llu IRQs=%u\n",
+ 	    getCPUNumber(), mpidr, (mpidr >> 8) & 0xffULL,
+ 	    __builtin_arm_rsr64("CurrentEL") >> 2, ml_get_interrupts_enabled());
+ 	__atomic_store_n(&initialized, 1, __ATOMIC_RELEASE);
++	kprintf("SWEET SMP: cpu=%u initCPU done, returning to cpu_machine_init DAIF=0x%llx\n",
++	    getCPUNumber(), __builtin_arm_rsr64("DAIF"));
+ }
+ 
+ void
+--- a/osfmk/arm64/cpu.c
++++ b/osfmk/arm64/cpu.c
+@@ -495,6 +495,11 @@
+ 	}
+ 
+ 	if (__improbable(idle_disallowed)) {
++		static uint32_t sweet_idle_bypass_logged[MAX_CPUS];
++		if (sweet_idle_bypass_logged[cpu_data_ptr->cpu_number]++ < 8) {
++			kprintf("SWEET SMP: cpu=%u cpu_idle: idle bypassed signal=0x%x\n",
++			    cpu_data_ptr->cpu_number, cpu_data_ptr->cpu_signal);
++		}
+ 		Idle_load_context();
+ 	}
+ 
+@@ -901,6 +906,8 @@
+ 	if (cpu == cpu_number()) {
+ 		cpu_machine_init();
+ 		configure_coresight_registers(cpu_data_ptr);
++		kprintf("SWEET SMP: cpu_start(%d) local cpu_machine_init returned DAIF=0x%llx\n",
++		    cpu, __builtin_arm_rsr64("DAIF"));
+ 	} else {
+ 		thread_t first_thread;
+ 		cpu_data_ptr->cpu_reset_handler = (vm_offset_t) start_cpu_paddr;
+@@ -956,7 +963,10 @@
+ 			break;
+ 		}
+ #endif
++		kprintf("SWEET SMP: cpu_start(%d): PE_cpu_start reset_handler=0x%llx\n",
++		    cpu, (uint64_t)cpu_data_ptr->cpu_reset_handler);
+ 		(void) PE_cpu_start(cpu_data_ptr->cpu_id, (vm_offset_t)NULL, (vm_offset_t)NULL);
++		kprintf("SWEET SMP: cpu_start(%d): PE_cpu_start returned\n", cpu);
+ 	}
+ 
+ 	return KERN_SUCCESS;
+@@ -965,6 +975,7 @@
+ 
+ #if defined(SWEET)
+ /* Bring-up observer: the self-SGI clears SIGPdisabled after IRQs unmask. */
++uint32_t sweet_cpu_signal_raw(unsigned int cpu);
+ boolean_t sweet_cpu_signal_is_enabled(unsigned int cpu);
+ boolean_t
+ sweet_cpu_signal_is_enabled(unsigned int cpu)
+@@ -974,6 +985,16 @@
+ 	}
+ 	cpu_data_t *cdp = CpuDataEntries[cpu].cpu_data_vaddr;
+ 	return cdp != NULL && !(os_atomic_load(&cdp->cpu_signal, acquire) & SIGPdisabled);
++}
++
++uint32_t
++sweet_cpu_signal_raw(unsigned int cpu)
++{
++	if (cpu >= MAX_CPUS) {
++		return 0xffffffffu;
++	}
++	cpu_data_t *cdp = CpuDataEntries[cpu].cpu_data_vaddr;
++	return cdp == NULL ? 0xffffffffu : os_atomic_load(&cdp->cpu_signal, acquire);
+ }
+ #endif
+ 
+--- a/osfmk/arm64/machine_routines.c
++++ b/osfmk/arm64/machine_routines.c
+@@ -564,8 +564,14 @@
+ void
+ slave_machine_init(__unused void *param)
+ {
++	kprintf("SWEET SMP: cpu=%u slave_machine_init enter DAIF=0x%llx\n",
++	    cpu_number(), __builtin_arm_rsr64("DAIF"));
+ 	cpu_machine_init();     /* Initialize the processor */
++	kprintf("SWEET SMP: cpu=%u cpu_machine_init returned, clock_init next DAIF=0x%llx\n",
++	    cpu_number(), __builtin_arm_rsr64("DAIF"));
+ 	clock_init();           /* Init the clock */
++	kprintf("SWEET SMP: cpu=%u clock_init returned DAIF=0x%llx\n",
++	    cpu_number(), __builtin_arm_rsr64("DAIF"));
+ }
+ 
+ /*
+@@ -834,6 +840,8 @@
+ 	 * on the bootstrap cpu
+ 	 */
+ 	if (getCpuDatap()->cluster_master) {
++		kprintf("SWEET SMP: cpu=%u ml_init_interrupt: cluster_master, deferred IPI timer\n",
++		    cpu_number());
+ 		ml_cpu_signal_deferred_adjust_timer(deferred_ipi_timer_ns);
+ 	}
+ #endif
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -1847,6 +1847,10 @@
+ 	__builtin_unreachable();
+ }
+ 
++#if defined(SWEET)
++extern uint32_t sweet_cpu_signal_raw(unsigned int cpu);
++#endif
++
+ void
+ sleh_irq(arm_saved_state_t *state)
+ {
+@@ -1875,11 +1879,22 @@
+ 		INTERRUPT_MASKED_DEBUG_END();
+ 		__builtin_arm_wsr64("ICC_EOIR1_EL1", iar);
+ 	} else if (intid < 16) {
++		uint32_t sig_before = sweet_cpu_signal_raw(cpu_number());
++
+ 		sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_IPI);
++		if (sig_before & 0x80000000U) {
++			kprintf("SWEET SMP: cpu=%u IRQ intid=%u before signal=0x%x\n",
++			    cpu_number(), intid, sig_before);
++		}
+ 		/* Ack before handling so an IPI raised meanwhile is not lost */
+ 		__builtin_arm_wsr64("ICC_EOIR1_EL1", iar);
+ 		__builtin_arm_isb(ISB_SY);
+ 		cpu_signal_handler();
++		if (sig_before & 0x80000000U) {
++			kprintf("SWEET SMP: cpu=%u IPI handled after signal=0x%x DAIF=0x%llx\n",
++			    cpu_number(), sweet_cpu_signal_raw(cpu_number()),
++			    __builtin_arm_rsr64("DAIF"));
++		}
+ 	} else {
+ 		sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_OTHER);
+ 		if (cdp->interrupt_handler) {
+--- a/osfmk/arm/arm_init.c
++++ b/osfmk/arm/arm_init.c
+@@ -797,6 +797,10 @@
+ #endif
+ 
+ 
++#if defined(SWEET)
++	kprintf("SWEET SMP: cpu=%d arm_init_cpu done, entering slave_main DAIF=0x%llx\n",
++	    cpu_data_ptr->cpu_number, __builtin_arm_rsr64("DAIF"));
++#endif
+ 	slave_main(NULL);
+ }
+ 
+--- a/osfmk/arm/cpu_common.c
++++ b/osfmk/arm/cpu_common.c
+@@ -53,6 +53,7 @@
+ #include <vm/vm_map.h>
+ #include <pexpert/arm/protos.h>
+ #include <pexpert/device_tree.h>
++#include <pexpert/pexpert.h>
+ #include <sys/kdebug.h>
+ #include <arm/machine_routines.h>
+ #include <arm64/proc_reg.h>
+@@ -690,10 +691,15 @@
+ 	}
+ 
+ 	/* Note: this calls IOCPURunPlatformActiveActions when resuming on boot cpu */
++	kprintf("SWEET SMP: cpu=%d cpu_machine_init: calling initCPU DAIF=0x%llx\n",
++	    cpu_data_ptr->cpu_number, __builtin_arm_rsr64("DAIF"));
+ 	PE_cpu_machine_init(cpu_data_ptr->cpu_id, !started);
++	kprintf("SWEET SMP: cpu=%d cpu_machine_init: initCPU returned DAIF=0x%llx\n",
++	    cpu_data_ptr->cpu_number, __builtin_arm_rsr64("DAIF"));
+ 
+ 	cpu_data_ptr->cpu_flags |= StartedState;
+ 	ml_init_interrupt();
++	kprintf("SWEET SMP: cpu=%d cpu_machine_init done\n", cpu_data_ptr->cpu_number);
+ }
+ 
+ processor_t
+--- a/osfmk/arm/rtclock.c
++++ b/osfmk/arm/rtclock.c
+@@ -58,6 +58,7 @@
+ #error Unsupported arch
+ #endif
+ #include <arm/rtclock.h>
++#include <pexpert/pexpert.h>
+ 
+ #include <IOKit/IOPlatformExpert.h>
+ #include <libkern/OSAtomic.h>
+@@ -150,13 +151,17 @@
+ 	uint64_t     abstime;
+ 	cpu_data_t * cdp;
+ 
++	kprintf("SWEET SMP: cpu=%u rtclock_init enter DAIF=0x%llx\n",
++	    cpu_number(), __builtin_arm_rsr64("DAIF"));
+ 	clock_timebase_init();
++	kprintf("SWEET SMP: cpu=%u clock_timebase_init returned\n", cpu_number());
+ 
+ 	cdp = getCpuDatap();
+ 
+ 	abstime = mach_absolute_time();
+ 	cdp->rtcPop = EndOfAllTime;                                     /* Init Pop time */
+ 	timer_resync_deadlines();                                       /* Start the timers going */
++	kprintf("SWEET SMP: cpu=%u timer_resync_deadlines returned\n", cpu_number());
+ 
+ 	return 1;
+ }
+--- a/osfmk/kern/startup.c
++++ b/osfmk/kern/startup.c
+@@ -829,6 +829,10 @@
+ 	processor_t             processor = current_processor();
+ 	thread_t                thread;
+ 
++	kprintf("SWEET SMP: cpu=%u slave_main enter DAIF=0x%llx offlined=%u startup=%p idle=%p\n",
++	    cpu_number(), __builtin_arm_rsr64("DAIF"),
++	    processor->processor_offlined ? 1u : 0u,
++	    (void *)processor->startup_thread, (void *)processor->idle_thread);
+ 	/*
+ 	 *	Use the idle processor thread if there
+ 	 *	is no dedicated start up thread.
+@@ -848,6 +852,8 @@
+ 		thread->parameter = machine_param;
+ 	}
+ 
++	kprintf("SWEET SMP: cpu=%u slave_main loading thread=%p DAIF=0x%llx\n",
++	    cpu_number(), (void *)thread, __builtin_arm_rsr64("DAIF"));
+ 	load_context(thread);
+ 	/*NOTREACHED*/
+ }
+@@ -866,7 +872,11 @@
+ 	processor_t             processor = current_processor();
+ 	thread_t                self = current_thread();
+ 
++	kprintf("SWEET SMP: cpu=%u processor_start_thread enter self=%p DAIF=0x%llx\n",
++	    cpu_number(), (void *)self, __builtin_arm_rsr64("DAIF"));
+ 	slave_machine_init(machine_param);
++	kprintf("SWEET SMP: cpu=%u processor_start_thread slave_machine_init returned DAIF=0x%llx\n",
++	    cpu_number(), __builtin_arm_rsr64("DAIF"));
+ 
+ 	/*
+ 	 *	If running the idle processor thread,
+@@ -876,6 +886,8 @@
+ 		thread_block(idle_thread);
+ 	}
+ 
++	kprintf("SWEET SMP: cpu=%u processor_start_thread terminating startup thread DAIF=0x%llx\n",
++	    cpu_number(), __builtin_arm_rsr64("DAIF"));
+ 	thread_terminate(self);
+ 	/*NOTREACHED*/
+ }
+@@ -897,6 +909,9 @@
+ #define load_context_kprintf(x...) /* kprintf("load_context: " x) */
+ 
+ 	load_context_kprintf("machine_set_current_thread\n");
++	kprintf("SWEET SMP: cpu=%u load_context thread=%p current=%p DAIF=0x%llx\n",
++	    cpu_number(), (void *)thread, (void *)current_thread(),
++	    __builtin_arm_rsr64("DAIF"));
+ 	machine_set_current_thread(thread);
+ 
+ 	load_context_kprintf("processor_up\n");
+--- a/osfmk/kern/sched_prim.c
++++ b/osfmk/kern/sched_prim.c
+@@ -6485,6 +6485,9 @@
+ 	assert(ml_get_interrupts_enabled() == FALSE);
+ 	assert(parameter == NULL);
+ 
++	kprintf("SWEET SMP: cpu=%u idle_thread enter DAIF=0x%llx signal=0x%x\n",
++	    cpu_number(), __builtin_arm_rsr64("DAIF"), getCpuDatap()->cpu_signal);
++
+ 	processor_t processor = current_processor();
+ 
+ 	/*
+@@ -6498,6 +6501,8 @@
+ 	 * or IPIs before deciding to sleep
+ 	 */
+ 	spllo();
++	kprintf("SWEET SMP: cpu=%u idle_thread after spllo DAIF=0x%llx signal=0x%x\n",
++	    cpu_number(), __builtin_arm_rsr64("DAIF"), getCpuDatap()->cpu_signal);
+ 
+ 	thread_t new_thread = processor_idle(THREAD_NULL, processor);
+ 	/* returns with interrupts disabled */
+--- a/pexpert/arm/pe_fiq.c
++++ b/pexpert/arm/pe_fiq.c
+@@ -78,6 +78,11 @@
+ {
+ 	int error;
+ 	DTEntry entry;
++
++#if defined(SWEET)
++	kprintf("SWEET SMP: pe_init_fiq enter mpidr=0x%llx gicd_mapped=%u\n",
++	    __builtin_arm_rsr64("MPIDR_EL1") & 0xFFFFFFULL, gicd_base ? 1u : 0u);
++#endif
+ 
+ 	// gicd_base is 0x0 only before it's initialized by the boot processor.
+ 	// Avoid calling SecureDT* routines on secondary processors to avoid
+@@ -145,6 +150,12 @@
+ 
+ 	// Find the redistributor for this processor
+ 	vm_offset_t gicr_pe_base = find_gicr_pe_base();
++#if defined(SWEET)
++	kprintf("SWEET SMP: pe_init_fiq mpidr=0x%llx gicr_off=0x%llx typer=0x%llx waker=0x%x\n",
++	    __builtin_arm_rsr64("MPIDR_EL1") & 0xFFFFFFULL,
++	    (uint64_t)(gicr_pe_base - gicr_base), gicr_read64(GICR_TYPER),
++	    gicr_read32(GICR_WAKER));
++#endif
+ 
+ 	// Mark this PE to be awake
+ 	uint32_t gicr_waker = gicr_read32(GICR_WAKER);
+@@ -163,6 +174,10 @@
+ 			}
+ 		}
+ 	}
++#if defined(SWEET)
++	kprintf("SWEET SMP: pe_init_fiq mpidr=0x%llx redistributor awake waker=0x%x\n",
++	    __builtin_arm_rsr64("MPIDR_EL1") & 0xFFFFFFULL, gicr_read32(GICR_WAKER));
++#endif
+ 
+ #if defined(SWEET)
+ 	/*
+@@ -176,6 +191,10 @@
+ 		gicr_write32(GICR_IPRIORITYR0 + i, 0xA0A0A0A0);
+ 	}
+ 	gicr_write32(GICR_ISENABLER0, (1U << sweet_vtimer_intid) | (1U << SWEET_IPI_SGI));
++	kprintf("SWEET SMP: pe_init_fiq mpidr=0x%llx enabled SGI%u vtimer%u isen=0x%x igrpen1=0x%llx\n",
++	    __builtin_arm_rsr64("MPIDR_EL1") & 0xFFFFFFULL, SWEET_IPI_SGI,
++	    sweet_vtimer_intid, gicr_read32(GICR_ISENABLER0),
++	    __builtin_arm_rsr64("ICC_IGRPEN1_EL1"));
+ #else
+ 	// Configure timers and legacy FIQ to be group 0
+ 	gicr_write32(GICR_IGROUPR0, 0x81FFFFFF);

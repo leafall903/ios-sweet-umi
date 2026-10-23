@@ -1,0 +1,26 @@
+--- a/iokit/bsddev/IOKitBSDInit.cpp
++++ b/iokit/bsddev/IOKitBSDInit.cpp
+@@ -655,6 +655,7 @@
+ IOFindBSDRoot( char * rootName, unsigned int rootNameSize,
+     dev_t * root, u_int32_t * oflags )
+ {
++	IOLog("SWEET: BSD root lookup enter\n");
+ 	mach_timespec_t     t;
+ 	IOService *         service;
+ 	IORegistryEntry *   regEntry;
+@@ -688,6 +689,7 @@
+ 	} else {
+ 		IOLog("!BSD\n");
+ 	}
++	IOLog("SWEET: IOBSD wait done\n");
+ 	matching->release();
+ 	matching = NULL;
+ 
+@@ -706,6 +708,7 @@
+ 	    && !PE_parse_boot_argn("rootdev", rdBootVar, kMaxBootVar )) {
+ 		rdBootVar[0] = 0;
+ 	}
++	IOLog("SWEET: rd=%s\n", rdBootVar);
+ 
+ 	if ((regEntry = IORegistryEntry::fromPath( "/chosen", gIODTPlane ))) {
+ 		do {

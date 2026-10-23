@@ -1,0 +1,146 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -726,6 +726,71 @@
+ 	uint64_t total, seq;
+ };
+ 
++/* Capture the tail of the previous session's persistent log. */
++static char sweet_log_prev[512];
++static uint32_t sweet_log_prev_len;
++static bool sweet_log_prev_valid;
++
++static void
++sweet_log_capture(void);
++
++static void
++sweet_log_prev_print(void);
++
++static void
++sweet_log_capture(void)
++{
++	uint64_t base = su.first_block + su.nblocks - SWEET_LOG_BLOCKS;
++	uint8_t *bounce = (uint8_t *)(su.dma + DMA_BOUNCE);
++	struct sweet_log_header *h = (struct sweet_log_header *)bounce;
++
++	if (!su.writable || ufs_read_blocks(base, 1)) {
++		return;
++	}
++	if (h->magic[0] != 'S' || h->magic[7] != 'G' || h->size == 0 ||
++	    h->size > SWEET_LOG_SIZE || h->total == 0) {
++		return;
++	}
++	uint64_t last = (h->total - 1) / UFS_BLOCK % (h->size / UFS_BLOCK);
++	if (ufs_read_blocks(base + 1 + last, 1)) {
++		return;
++	}
++	memcpy(sweet_log_prev, bounce + UFS_BLOCK - 512, sizeof(sweet_log_prev));
++	sweet_log_prev_len = sizeof(sweet_log_prev);
++	sweet_log_prev_valid = true;
++}
++
++static void
++sweet_log_prev_print(void)
++{
++	char line[80];
++	uint32_t n = 0;
++
++	if (!sweet_log_prev_valid || sweet_log_prev_len == 0) {
++		return;
++	}
++	printf("SWEET LOG: previous session tail:\n");
++	for (uint32_t i = 0; i < sweet_log_prev_len; i++) {
++		char c = sweet_log_prev[i];
++		if (c == '\n' || n >= sizeof(line) - 1) {
++			line[n] = 0;
++			if (n) {
++				printf("%s\n", line);
++			}
++			n = 0;
++			continue;
++		}
++		if (c >= 32 && c < 127) {
++			line[n++] = c;
++		}
++	}
++	if (n) {
++		line[n] = 0;
++		printf("%s\n", line);
++	}
++	sweet_log_prev_valid = false;
++}
++
+ static void
+ sweet_log_thread(__unused void *arg, __unused wait_result_t wr)
+ {
+@@ -739,6 +804,13 @@
+ 		(void)tsleep(&sweet_log_chan, PZERO, "sweetlog", hz * (int)sweet_log_secs);
+ 		/* SWEET: heartbeat so we can tell a live kernel from a dead console. */
+ 		printf("SWEET TICK %llu\n", (unsigned long long)mach_absolute_time());
++		{
++			static uint32_t ticks;
++			if (sweet_log_prev_valid && ticks < 3) {
++				sweet_log_prev_print();
++			}
++			ticks++;
++		}
+ 		/*
+ 		 * SWEET: paint a moving bar straight into the framebuffer.  This does
+ 		 * not use the console lock, so it still shows if the console path is
+@@ -797,48 +869,6 @@
+ 	}
+ }
+ 
+-/* Print the last block of the previous session's persistent log. */
+-static void
+-sweet_log_dump(void)
+-{
+-	uint64_t base = su.first_block + su.nblocks - SWEET_LOG_BLOCKS;
+-	uint8_t *bounce = (uint8_t *)(su.dma + DMA_BOUNCE);
+-	struct sweet_log_header *h = (struct sweet_log_header *)bounce;
+-	char line[80];
+-	uint32_t n = 0;
+-
+-	if (!su.writable || ufs_read_blocks(base, 1)) {
+-		return;
+-	}
+-	if (h->magic[0] != 'S' || h->magic[7] != 'G' || h->size == 0 ||
+-	    h->size > SWEET_LOG_SIZE || h->total == 0) {
+-		return;
+-	}
+-	uint64_t last = (h->total - 1) / UFS_BLOCK % (h->size / UFS_BLOCK);
+-	if (ufs_read_blocks(base + 1 + last, 1)) {
+-		return;
+-	}
+-	printf("SWEET LOG: previous session tail (total %llu):\n", h->total);
+-	for (uint32_t i = UFS_BLOCK - 512; i < UFS_BLOCK; i++) {
+-		char c = (char)bounce[i];
+-		if (c == '\n' || n >= sizeof(line) - 1) {
+-			line[n] = 0;
+-			if (n) {
+-				printf("%s\n", line);
+-			}
+-			n = 0;
+-			continue;
+-		}
+-		if (c >= 32 && c < 127) {
+-			line[n++] = c;
+-		}
+-	}
+-	if (n) {
+-		line[n] = 0;
+-		printf("%s\n", line);
+-	}
+-}
+-
+ static void
+ sweet_log_start(void)
+ {
+@@ -853,7 +883,7 @@
+ 	if (sweet_log_secs == 0 || sweet_log_secs > 60) {
+ 		sweet_log_secs = SWEET_LOG_SECS;
+ 	}
+-	sweet_log_dump();
++	sweet_log_capture();
+ 	if (kernel_thread_start(sweet_log_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}

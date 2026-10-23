@@ -1,0 +1,25 @@
+--- a/bsd/kern/kern_proc.c
++++ b/bsd/kern/kern_proc.c
+@@ -3494,6 +3494,7 @@
+ 	case CS_OPS_IDENTITY:
+ 	case CS_OPS_TEAMID: {
+ 		const char *identity;
++		char sweet_identity[64];
+ 		uint8_t fakeheader[8];
+ 		uint32_t idlen;
+ 		size_t length;
+@@ -3516,6 +3517,14 @@
+ 			break;
+ 		}
+ 		identity = ops == CS_OPS_TEAMID ? csproc_get_teamid(pt) : cs_identity_get(pt);
++		if (identity == NULL && ops == CS_OPS_IDENTITY &&
++		    pt->p_name[0] != '\0') {
++			/* SWEET: no usable signature blob; launchd expects the
++			 * CodeDirectory ident, i.e. com.apple.<program>. */
++			snprintf(sweet_identity, sizeof(sweet_identity),
++			    "com.apple.%s", pt->p_name);
++			identity = sweet_identity;
++		}
+ 		proc_unlock(pt);
+ 
+ 		if (identity == NULL) {

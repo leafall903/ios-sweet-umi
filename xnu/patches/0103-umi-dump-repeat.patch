@@ -1,0 +1,11 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -878,7 +878,7 @@
+ 			if (sweet_log_prev_valid && ticks < 3) {
+ 				sweet_log_prev_print();
+ 			}
+-			if (ticks == 6) {
++			if (ticks >= 6 && (ticks % 3) == 0) {
+ 				sweet_dump_file();
+ 			}
+ 			ticks++;

@@ -1,0 +1,21 @@
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -207,8 +207,18 @@
+ 
+ 	if (!IOService::start(provider)) {
+ 		return false;
+ 	}
++	/*
++	 * IOMobileFramebuffer.framework counts /arm-io children whose device_type
++	 * is "display-subsystem" and only then waits for that many
++	 * IOMobileFramebuffer services. The ADT node carries the property, but the
++	 * count came out zero, so make sure the provider nub has it in the service
++	 * plane as well before anyone can look.
++	 */
++	if (provider != NULL && provider->getProperty("device_type") == NULL) {
++		provider->setProperty("device_type", "display-subsystem");
++	}
+ 	PE_current_console(&video);
+ 	fPhys = video.v_baseAddr;
+ 	fWidth = (uint32_t)video.v_width;
+ 	fHeight = (uint32_t)video.v_height;

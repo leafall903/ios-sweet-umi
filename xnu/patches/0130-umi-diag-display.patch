@@ -1,0 +1,63 @@
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -37,8 +37,60 @@
+ #include "SweetSurface.h"
+ 
+ extern "C" int sweet_console_muted;     /* osfmk/console/serial_console.c */
+ 
++/*
++ * SWEET diagnostic: answer, from the kernel, the question the userspace stack
++ * asks -- does IOServiceMatching("IOMobileFramebuffer") find this driver? It
++ * runs at the first exec, long after IOKit is up, and prints the count so a
++ * persistent log can tell a matching problem from a timing problem.
++ */
++extern "C" void sweet_diag_display(void);
++
++extern "C" void
++sweet_diag_display(void)
++{
++	OSIterator *it = IOService::getMatchingServices(
++	    IOService::serviceMatching("IOMobileFramebuffer"));
++	IOService *svc;
++	int n = 0;
++
++	while (it != NULL && (svc = OSDynamicCast(IOService, it->getNextObject())) != NULL) {
++		n++;
++		printf("SWEET DIAG: match[%d] %s provider=%s\n", n - 1,
++		    svc->getName() ? svc->getName() : "?",
++		    (svc->getProvider() && svc->getProvider()->getName()) ?
++		    svc->getProvider()->getName() : "?");
++	}
++	if (it != NULL) {
++		it->release();
++	}
++	printf("SWEET DIAG: IOServiceMatching(\"IOMobileFramebuffer\") found %d service(s)\n", n);
++
++	/* and the node the framework counts, straight from the device tree */
++	IORegistryEntry *armio = IORegistryEntry::fromPath("/arm-io", gIODTPlane);
++	int disp = 0;
++	if (armio != NULL) {
++		OSIterator *kids = armio->getChildIterator(gIODTPlane);
++		IORegistryEntry *kid;
++		while (kids != NULL && (kid = OSDynamicCast(IORegistryEntry, kids->getNextObject())) != NULL) {
++			OSObject *dt = kid->getProperty("device_type");
++			OSString *s = OSDynamicCast(OSString, dt);
++			if (s != NULL && s->isEqualTo("display-subsystem")) {
++				disp++;
++				printf("SWEET DIAG: display-subsystem child: %s\n",
++				    kid->getName() ? kid->getName() : "?");
++			}
++		}
++		if (kids != NULL) {
++			kids->release();
++		}
++		armio->release();
++	}
++	printf("SWEET DIAG: /arm-io display-subsystem children = %d\n", disp);
++}
++
++
+ #if defined(SWEET)
+ #include <IOKit/IOService.h>
+ #include <IOKit/IOUserClient.h>
+ #include <IOKit/IOKitKeys.h>

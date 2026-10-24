@@ -1,18 +1,26 @@
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
-@@ -37,8 +37,60 @@
+@@ -36,8 +36,15 @@
+  */
  #include "SweetSurface.h"
  
  extern "C" int sweet_console_muted;     /* osfmk/console/serial_console.c */
- 
 +/*
 + * SWEET diagnostic: answer, from the kernel, the question the userspace stack
 + * asks -- does IOServiceMatching("IOMobileFramebuffer") find this driver? It
-+ * runs at the first exec, long after IOKit is up, and prints the count so a
++ * runs at the first exec, when IOKit is up, and prints the counts so a
 + * persistent log can tell a matching problem from a timing problem.
 + */
 +extern "C" void sweet_diag_display(void);
-+
+ 
+ #if defined(SWEET)
+ #include <IOKit/IOService.h>
+ #include <IOKit/IOUserClient.h>
+@@ -89,8 +96,49 @@
+ OSDefineMetaClassAndStructors(IOMobileFramebuffer, IOService);
+ 
+ class IOMobileFramebufferUserClient;
+ 
 +extern "C" void
 +sweet_diag_display(void)
 +{
@@ -33,15 +41,13 @@
 +	}
 +	printf("SWEET DIAG: IOServiceMatching(\"IOMobileFramebuffer\") found %d service(s)\n", n);
 +
-+	/* and the node the framework counts, straight from the device tree */
 +	IORegistryEntry *armio = IORegistryEntry::fromPath("/arm-io", gIODTPlane);
 +	int disp = 0;
 +	if (armio != NULL) {
 +		OSIterator *kids = armio->getChildIterator(gIODTPlane);
 +		IORegistryEntry *kid;
 +		while (kids != NULL && (kid = OSDynamicCast(IORegistryEntry, kids->getNextObject())) != NULL) {
-+			OSObject *dt = kid->getProperty("device_type");
-+			OSString *s = OSDynamicCast(OSString, dt);
++			OSString *s = OSDynamicCast(OSString, kid->getProperty("device_type"));
 +			if (s != NULL && s->isEqualTo("display-subsystem")) {
 +				disp++;
 +				printf("SWEET DIAG: display-subsystem child: %s\n",
@@ -56,8 +62,7 @@
 +	printf("SWEET DIAG: /arm-io display-subsystem children = %d\n", disp);
 +}
 +
-+
- #if defined(SWEET)
- #include <IOKit/IOService.h>
- #include <IOKit/IOUserClient.h>
- #include <IOKit/IOKitKeys.h>
+ class AppleCLCD : public IOMobileFramebuffer {
+ 	OSDeclareDefaultStructors(AppleCLCD);
+ 
+ 	IOWorkLoop         *fWorkLoop;

@@ -1,8 +1,8 @@
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
-@@ -138,8 +138,68 @@
+@@ -163,8 +163,68 @@
+ 		    pname[p], kids_n, disp);
  	}
- 	printf("SWEET DIAG: /arm-io display-subsystem children = %d\n", disp);
  }
  
 +/*

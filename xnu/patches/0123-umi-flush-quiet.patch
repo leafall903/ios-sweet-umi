@@ -1,0 +1,21 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -944,14 +944,13 @@
+ 		if (!error) {
+ 			error = ufs_sync_cache();
+ 		}
+ 		lck_mtx_unlock(&sweet_ufs_lock);
+-		if (error) {
+-			printf("SWEET LOG: write failed (%d)\n", error);
+-		} else {
++		/* No printing here: this runs with the console lock held (the flush is
++		 * triggered from the console output path), and a nested console write
++		 * would deadlock on the non-recursive lock. */
++		if (!error) {
+ 			sweet_log_flushed = total;
+-			printf("SWEET LOG: flushed %llu bytes (seq %llu)\n",
+-			    (unsigned long long)total, (unsigned long long)sweet_log_seq);
+ 		}
+ 	}
+ 	os_atomic_store(&sweet_log_flushing, 0, relaxed);
+ }

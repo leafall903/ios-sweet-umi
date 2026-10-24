@@ -1,0 +1,13 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -894,9 +894,9 @@
+ 	    SWEET_LOG_BLOCKS * UFS_BLOCK >> 10, base);
+ 	int first_pass = 1;
+ 	for (;;) {
+ 		if (!first_pass) {
+-			(void)tsleep(&sweet_log_chan, PZERO, "sweetlog", hz * (int)sweet_log_secs);
++			delay_for_interval(sweet_log_secs, NSEC_PER_SEC);
+ 		}
+ 		first_pass = 0;
+ 		/* SWEET: heartbeat so we can tell a live kernel from a dead console. */
+ 		printf("SWEET TICK %llu\n", (unsigned long long)mach_absolute_time());

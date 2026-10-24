@@ -1,0 +1,71 @@
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -138,8 +138,68 @@
+ 	}
+ 	printf("SWEET DIAG: /arm-io display-subsystem children = %d\n", disp);
+ }
+ 
++/*
++ * SWEET heartbeat on the panel itself: the persistent log needs UFS writes,
++ * and those are exactly what we suspect of hanging the boot. Drawing a bar
++ * needs nothing but a mapped framebuffer, so a photo of the screen tells how
++ * many ticks the kernel survived.
++ */
++static volatile uint32_t *sweet_hb_fb;
++static uint32_t sweet_hb_row, sweet_hb_w, sweet_hb_h;
++extern "C" vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++
++static void
++sweet_hb_map(void)
++{
++	PE_Video video;
++
++	if (sweet_hb_fb != NULL) {
++		return;
++	}
++	PE_current_console(&video);
++	if (video.v_baseAddr == 0 || video.v_rowBytes == 0 || video.v_height == 0) {
++		return;
++	}
++	vm_size_t size = (vm_size_t)video.v_rowBytes * video.v_height;
++	vm_offset_t va = ml_io_map((vm_offset_t)video.v_baseAddr, size);
++	if (va == 0) {
++		return;
++	}
++	sweet_hb_w = (uint32_t)video.v_width;
++	sweet_hb_h = (uint32_t)video.v_height;
++	sweet_hb_row = (uint32_t)video.v_rowBytes / 4;
++	sweet_hb_fb = (volatile uint32_t *)va;
++}
++
++/* n filled blocks out of 64 along the top-left edge (a8r8g8b8). */
++extern "C" void
++sweet_fb_heartbeat(int n)
++{
++	sweet_hb_map();
++	if (sweet_hb_fb == NULL) {
++		return;
++	}
++	if (n < 0) {
++		n = 0;
++	}
++	if (n > 64) {
++		n = 64;
++	}
++	for (int i = 0; i < 64; i++) {
++		uint32_t color = (i < n) ? 0x0000ff00u : 0x00000000u;
++		for (uint32_t y = 0; y < 12 && y < sweet_hb_h; y++) {
++			for (uint32_t x = 0; x < 12; x++) {
++				uint32_t px = (uint32_t)i * 12 + x;
++				if (px < sweet_hb_w) {
++					sweet_hb_fb[y * sweet_hb_row + px] = color;
++				}
++			}
++		}
++	}
++}
++
+ class AppleCLCD : public IOMobileFramebuffer {
+ 	OSDeclareDefaultStructors(AppleCLCD);
+ 
+ 	IOWorkLoop         *fWorkLoop;

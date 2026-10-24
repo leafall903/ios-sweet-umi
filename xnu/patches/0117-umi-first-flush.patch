@@ -14,3 +14,13 @@
  		/* SWEET: heartbeat so we can tell a live kernel from a dead console. */
  		printf("SWEET TICK %llu\n", (unsigned long long)mach_absolute_time());
  		{
+@@ -945,6 +949,9 @@
+ 			return;
+ 		}
+ 		flushed = total;
++		printf("SWEET LOG: flushed %llu bytes to block 0x%llx (seq %llu)\n",
++		    (unsigned long long)total, (unsigned long long)base,
++		    (unsigned long long)seq);
+ 	}
+ }
+ 

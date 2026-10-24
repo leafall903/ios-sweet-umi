@@ -1,0 +1,65 @@
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -117,27 +117,52 @@
+ 		it->release();
+ 	}
+ 	printf("SWEET DIAG: IOServiceMatching(\"IOMobileFramebuffer\") found %d service(s)\n", n);
+ 
+-	IORegistryEntry *armio = IORegistryEntry::fromPath("/arm-io", gIODTPlane);
+-	int disp = 0;
+-	if (armio != NULL) {
+-		OSIterator *kids = armio->getChildIterator(gIODTPlane);
++	/* The framework counts /arm-io children with device_type
++	 * "display-subsystem". Print what both planes show, and which class the
++	 * property comes back as, because that is what decides the count. */
++	const IORegistryPlane *planes[2] = { gIODTPlane, gIOServicePlane };
++	const char *pname[2] = { "DT", "service" };
++	for (int p = 0; p < 2; p++) {
++		IORegistryEntry *armio = IORegistryEntry::fromPath("/arm-io", planes[p]);
++		int disp = 0, kids_n = 0;
++		printf("SWEET DIAG: %s /arm-io = %s\n", pname[p], armio ? "found" : "NULL");
++		if (armio == NULL) {
++			continue;
++		}
++		OSIterator *kids = armio->getChildIterator(planes[p]);
+ 		IORegistryEntry *kid;
+ 		while (kids != NULL && (kid = OSDynamicCast(IORegistryEntry, kids->getNextObject())) != NULL) {
+-			OSString *s = OSDynamicCast(OSString, kid->getProperty("device_type"));
+-			if (s != NULL && s->isEqualTo("display-subsystem")) {
++			OSObject *dt = kid->getProperty("device_type", planes[p]);
++			if (dt == NULL) {
++				dt = kid->getProperty("device_type");
++			}
++			const char *cls = dt ? dt->getMetaClass()->getClassName() : "(none)";
++			const char *val = "";
++			OSString *s = OSDynamicCast(OSString, dt);
++			OSData *d = OSDynamicCast(OSData, dt);
++			if (s != NULL) {
++				val = s->getCStringNoCopy();
++			} else if (d != NULL && d->getLength() > 0) {
++				val = (const char *)d->getBytesNoCopy();
++			}
++			kids_n++;
++			printf("SWEET DIAG: %s kid %s device_type=%.40s [%s]\n",
++			    pname[p], kid->getName() ? kid->getName() : "?", val ? val : "", cls);
++			if ((s != NULL && s->isEqualTo("display-subsystem")) ||
++			    (d != NULL && d->getLength() >= 17 &&
++			    memcmp(d->getBytesNoCopy(), "display-subsystem", 17) == 0)) {
+ 				disp++;
+-				printf("SWEET DIAG: display-subsystem child: %s\n",
+-				    kid->getName() ? kid->getName() : "?");
+ 			}
+ 		}
+ 		if (kids != NULL) {
+ 			kids->release();
+ 		}
+ 		armio->release();
+-	}
+-	printf("SWEET DIAG: /arm-io display-subsystem children = %d\n", disp);
++		printf("SWEET DIAG: %s /arm-io children=%d display-subsystem=%d\n",
++		    pname[p], kids_n, disp);
++	}
+ }
+ 
+ class AppleCLCD : public IOMobileFramebuffer {
+ 	OSDeclareDefaultStructors(AppleCLCD);

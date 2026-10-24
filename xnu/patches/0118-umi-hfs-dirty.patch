@@ -1,0 +1,194 @@
+--- a/bsd/sweet_hfs/core/hfs.h
++++ b/bsd/sweet_hfs/core/hfs.h
+@@ -904,6 +904,23 @@
+ void hfs_mark_inconsistent(struct hfsmount *hfsmp,
+ 						   hfs_inconsistency_reason_t reason);
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++/*
++ * SWEET dirty-volume takeover policy, shared by hfs_vfsutils.c (mount
++ * path) and hfs_vfsops.c (persistent inconsistent bit).  See the comment
++ * above sweet_hfs_dirty_policy() for the hfsdirty boot-arg values.
++ */
++enum sweet_hfs_dirty_mode {
++	SWEET_HFS_DIRTY_AUTO = 0,
++	SWEET_HFS_DIRTY_RO,
++	SWEET_HFS_DIRTY_RW,
++	SWEET_HFS_DIRTY_REPAIR
++};
++
++int sweet_hfs_dirty_policy(void);
++const char *sweet_hfs_dirty_mode_name(int mode);
++#endif /* ARM64_BOARD_CONFIG_SWEET */
++
+ void hfs_scan_blocks (struct hfsmount *hfsmp);
+ int hfs_vfs_root(struct mount *mp, struct vnode **vpp, vfs_context_t context);
+ 
+--- a/bsd/sweet_hfs/core/hfs_vfsutils.c
++++ b/bsd/sweet_hfs/core/hfs_vfsutils.c
+@@ -84,6 +84,67 @@
+ 
+ #define HFS_MOUNT_DEBUG 1
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++/*
++ * SWEET dirty-volume takeover policy.
++ *
++ * 0031 let a dirty (not cleanly unmounted), non-journaled root be mounted
++ * read-write because this port has no clean shutdown path.  That check
++ * also skipped the persistent kHFSVolumeInconsistentMask, so a volume the
++ * kernel had already detected corruption on was taken read-write again.
++ *
++ * Boot arguments:
++ *   hfsdirty=auto    (default) dirty + inconsistent -> read-only;
++ *                    dirty only -> read-write, because with no clean
++ *                    unmount path the root is dirty on every boot.
++ *   hfsdirty=ro      dirty -> read-only.  This is the strict rule; the
++ *                    root will not finish booting, which is the point.
++ *   hfsdirty=rw      legacy 0031 behaviour, for A/B comparison only.
++ *   hfsdirty=repair  accepted for forward compatibility; in-kernel repair
++ *                    is not implemented, so it behaves like auto.
++ */
++static int sweet_hfs_dirty_mode = -1;
++
++int
++sweet_hfs_dirty_policy(void)
++{
++	char arg[16];
++
++	if (sweet_hfs_dirty_mode >= 0)
++		return sweet_hfs_dirty_mode;
++
++	sweet_hfs_dirty_mode = SWEET_HFS_DIRTY_AUTO;
++
++	if (PE_parse_boot_argn("hfsdirty", arg, sizeof(arg))) {
++		if (strcmp(arg, "ro") == 0) {
++			sweet_hfs_dirty_mode = SWEET_HFS_DIRTY_RO;
++		} else if (strcmp(arg, "rw") == 0) {
++			sweet_hfs_dirty_mode = SWEET_HFS_DIRTY_RW;
++		} else if (strcmp(arg, "repair") == 0) {
++			sweet_hfs_dirty_mode = SWEET_HFS_DIRTY_REPAIR;
++		} else if (strcmp(arg, "auto") != 0) {
++			printf("hfs: unknown hfsdirty=%s, using auto\n", arg);
++		}
++	}
++	return sweet_hfs_dirty_mode;
++}
++
++const char *
++sweet_hfs_dirty_mode_name(int mode)
++{
++	switch (mode) {
++	case SWEET_HFS_DIRTY_RO:
++		return "ro";
++	case SWEET_HFS_DIRTY_RW:
++		return "rw";
++	case SWEET_HFS_DIRTY_REPAIR:
++		return "repair";
++	default:
++		return "auto";
++	}
++}
++#endif /* ARM64_BOARD_CONFIG_SWEET */
++
+ 
+ //*******************************************************************************
+ // Note: Finder information in the HFS/HFS+ metadata are considered opaque and
+@@ -203,20 +264,55 @@
+ 	if ((hfsmp->hfs_flags & HFS_READ_ONLY) == 0 && hfsmp->jnl == NULL &&
+ 	    (SWAP_BE32(vhp->attributes) & kHFSVolumeUnmountedMask) == 0) {
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+-		/*
+-		 * SWEET never unmounts its root (no clean shutdown yet), and
+-		 * there is no fsck_hfs before the root mount: take it anyway.
+-		 */
+-		if (vfs_flags(hfsmp->hfs_mp) & MNT_ROOTFS) {
+-			printf("hfs_mounthfsplus: SWEET: mounting dirty non-journaled root read-write\n");
++		int dirty_policy = sweet_hfs_dirty_policy();
++		boolean_t dirty_root = (vfs_flags(hfsmp->hfs_mp) & MNT_ROOTFS) != 0;
++		boolean_t inconsistent =
++		    (SWAP_BE32(vhp->attributes) & kHFSVolumeInconsistentMask) != 0;
++
++		if (dirty_policy == SWEET_HFS_DIRTY_REPAIR) {
++			printf("hfs_mounthfsplus: SWEET: hfsdirty=repair is not "
++			    "implemented in-kernel; using the auto policy "
++			    "(run fsck_hfs for a real repair)\n");
++		}
++		if (dirty_policy == SWEET_HFS_DIRTY_RW) {
++			/* 0031 behaviour: only the boot volume is allowed */
++			if (!dirty_root) {
++				if (HFS_MOUNT_DEBUG) {
++					printf("hfs_mounthfsplus: cannot mount dirty "
++					    "non-journaled volumes\n");
++				}
++				return (EINVAL);
++			}
++			printf("hfs_mounthfsplus: SWEET: dirty non-journaled root; "
++			    "taking it read-write (hfsdirty=rw, legacy 0031 "
++			    "behaviour)\n");
++		} else if (dirty_policy == SWEET_HFS_DIRTY_RO ||
++		    inconsistent || !dirty_root) {
++			/*
++			 * Never write to a volume whose last mount did not
++			 * finish, or that already carries the persistent
++			 * corruption marker.  Tell VFS as well so the rest
++			 * of the kernel stops trying to write.
++			 */
++			hfsmp->hfs_flags |= HFS_READ_ONLY;
++			if (hfsmp->hfs_mp != NULL) {
++				vfs_setflags(hfsmp->hfs_mp, MNT_RDONLY);
++			}
++			printf("hfs_mounthfsplus: SWEET: dirty non-journaled %s"
++			    "volume; mounting read-only (hfsdirty=%s%s)\n",
++			    dirty_root ? "root " : "",
++			    sweet_hfs_dirty_mode_name(dirty_policy),
++			    inconsistent ? ", inconsistent bit set" : "");
+ 		} else {
+-#endif
++			printf("hfs_mounthfsplus: SWEET: dirty non-journaled root; "
++			    "taking it read-write (hfsdirty=auto, no inconsistency "
++			    "marker, run fsck_hfs to clear)\n");
++		}
++#else
+ 		if (HFS_MOUNT_DEBUG) {
+ 			printf("hfs_mounthfsplus: cannot mount dirty non-journaled volumes\n");
+ 		}
+ 		return (EINVAL);
+-#if defined(ARM64_BOARD_CONFIG_SWEET)
+-		}
+ #endif
+ 	}
+ 
+--- a/bsd/sweet_hfs/core/hfs_vfsops.c
++++ b/bsd/sweet_hfs/core/hfs_vfsops.c
+@@ -1561,6 +1561,30 @@
+ 			goto error_exit;
+ 		}
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		/*
++		 * 0031 let the boot volume through even when it carried the
++		 * persistent inconsistent bit.  That is exactly the volume on
++		 * which further writes spread the damage, so downgrade it to a
++		 * read-only mount unless the operator explicitly asked for the
++		 * legacy behaviour.  This runs before hfs_MountHFSPlusVolume()
++		 * so its dirty-volume check sees HFS_READ_ONLY and skips the
++		 * write takeover entirely.
++		 */
++		if (!journal_replay_only
++			&& (vfs_flags(mp) & MNT_ROOTFS)
++			&& (SWAP_BE32(vhp->attributes) & kHFSVolumeInconsistentMask)
++			&& !(hfsmp->hfs_flags & HFS_READ_ONLY)
++			&& sweet_hfs_dirty_policy() != SWEET_HFS_DIRTY_RW) {
++			hfsmp->hfs_flags |= HFS_READ_ONLY;
++			vfs_setflags(mp, MNT_RDONLY);
++			printf("hfs_mountfs: SWEET: root volume is marked "
++			    "inconsistent; mounting read-only "
++			    "(hfsdirty=%s), run fsck_hfs\n",
++			    sweet_hfs_dirty_mode_name(sweet_hfs_dirty_policy()));
++		}
++#endif
++
+ 
+ 		// XXXdbg
+ 		//

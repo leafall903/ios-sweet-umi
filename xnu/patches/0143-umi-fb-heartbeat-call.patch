@@ -1,0 +1,35 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -945,8 +945,18 @@
+  * protected; called from the console path every 8 KiB and once at start-up. */
+ static void
+ sweet_log_flush_to_disk(void)
+ {
++
++	static int sweet_flush_on = -1;
++	if (sweet_flush_on < 0) {
++		int on = 1;
++		PE_parse_boot_argn("sweetflush", &on, sizeof(on));
++		sweet_flush_on = on ? 1 : 0;
++	}
++	if (!sweet_flush_on) {
++		return;
++	}
+ 	uint64_t base, total, flushed, pos;
+ 	void *bounce;
+ 	int error = 0;
+ 
+@@ -1103,8 +1113,13 @@
+ 				diag_done = 1;
+ 				sweet_diag_display();
+ 			}
+ 		}
++		{
++			static int hb_ticks;
++			extern void sweet_fb_heartbeat(int);
++			sweet_fb_heartbeat(++hb_ticks);
++		}
+ 		if (sweet_misc_secs != 0) {
+ 			uint64_t elapsed = 0;
+ 			absolutetime_to_nanoseconds(mach_absolute_time() -
+ 			    (uint64_t)sweet_misc_start, &elapsed);

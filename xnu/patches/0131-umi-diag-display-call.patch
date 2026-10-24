@@ -1,0 +1,15 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -995,8 +995,12 @@
+ 	sweet_log_thread_started = 1;
+ 	if (kernel_thread_start(sweet_log_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
++	{
++		extern void sweet_diag_display(void);
++		sweet_diag_display();
++	}
+ }
+ 
+ static void
+ sweet_log_start(void)

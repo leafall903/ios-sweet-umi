@@ -7,12 +7,13 @@
  		sweet_log_flush_to_disk();
 -		(void)tsleep(&sweet_log_chan, PZERO, "sweetlog", hz > 0 ? hz : 100);
 +		/*
-+		 * Wake on output, and in any case one second from now: an absolute
++		 * Wake on output, and in any case every five seconds: an absolute
 +		 * deadline does not depend on hz being initialised (it is not, at the
-+		 * point where this thread is first started).
++		 * point where this thread is first started). Five seconds keeps the
++		 * timestamp line useful without drowning the log or the disk.
 +		 */
 +		uint64_t deadline;
-+		clock_interval_to_deadline(1, NSEC_PER_SEC, &deadline);
++		clock_interval_to_deadline(5, NSEC_PER_SEC, &deadline);
 +		assert_wait_deadline(&sweet_log_chan, THREAD_UNINT, deadline);
 +		thread_block(THREAD_CONTINUE_NULL);
  	}

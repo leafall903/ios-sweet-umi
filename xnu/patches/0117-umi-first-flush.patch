@@ -1,0 +1,16 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -892,8 +892,12 @@
+ 
+ 	printf("SWEET LOG: console log to the last %u KiB of the partition (block 0x%llx)\n",
+ 	    SWEET_LOG_BLOCKS * UFS_BLOCK >> 10, base);
++	int first_pass = 1;
+ 	for (;;) {
+-		(void)tsleep(&sweet_log_chan, PZERO, "sweetlog", hz * (int)sweet_log_secs);
++		if (!first_pass) {
++			(void)tsleep(&sweet_log_chan, PZERO, "sweetlog", hz * (int)sweet_log_secs);
++		}
++		first_pass = 0;
+ 		/* SWEET: heartbeat so we can tell a live kernel from a dead console. */
+ 		printf("SWEET TICK %llu\n", (unsigned long long)mach_absolute_time());
+ 		{

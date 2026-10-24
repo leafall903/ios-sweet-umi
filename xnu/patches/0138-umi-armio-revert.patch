@@ -1,0 +1,31 @@
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -68,27 +68,9 @@
+ 	 * platform expert: IOPlatformDevice::compareName asks its provider.
+ 	 */
+ 	IORegistryEntry *armio = root->childFromPath("arm-io", gIODTPlane);
+ 	if (armio != NULL) {
+-		/*
+-		 * On Apple hardware an AppleARMIO service publishes /arm-io and its
+-		 * children hang off it, so userspace looks devices up as
+-		 * IOService:/arm-io/<node>. Attaching the children to the platform
+-		 * expert instead leaves the IOService plane without an /arm-io node
+-		 * (IOMobileFramebuffer.framework then finds no display at all), so
+-		 * publish the node itself first and hang the children off it.
+-		 */
+-		IOService *armioSvc = createNub(armio);
+-		if (armioSvc != NULL) {
+-			IOLog("SWEET: publishing /arm-io as %s\n",
+-			    armioSvc->getName() ? armioSvc->getName() : "?");
+-			armioSvc->attach(this);
+-			armioSvc->registerService();
+-			createNubs(armioSvc, IODTFindMatchingEntries(armio, kIODTExclusive, "('gic')"));
+-			armioSvc->release();
+-		} else {
+-			createNubs(this, IODTFindMatchingEntries(armio, kIODTExclusive, "('gic')"));
+-		}
++		createNubs(this, IODTFindMatchingEntries(armio, kIODTExclusive, "('gic')"));
+ 		armio->release();
+ 	}
+ }
+ 

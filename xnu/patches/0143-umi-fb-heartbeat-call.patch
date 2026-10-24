@@ -1,12 +1,18 @@
 --- a/bsd/dev/sweet_ufs.c
 +++ b/bsd/dev/sweet_ufs.c
-@@ -945,8 +945,18 @@
+@@ -945,9 +945,24 @@
   * protected; called from the console path every 8 KiB and once at start-up. */
  static void
  sweet_log_flush_to_disk(void)
  {
-+
 +	static int sweet_flush_on = -1;
+ 	uint64_t base, total, flushed, pos;
++
++	/*
++	 * sweetflush=0 turns the ring writes off completely, so a boot can be run
++	 * with the panel heartbeat as the only output: if the system then survives,
++	 * these writes were what hung it.
++	 */
 +	if (sweet_flush_on < 0) {
 +		int on = 1;
 +		PE_parse_boot_argn("sweetflush", &on, sizeof(on));
@@ -15,11 +21,11 @@
 +	if (!sweet_flush_on) {
 +		return;
 +	}
- 	uint64_t base, total, flushed, pos;
  	void *bounce;
  	int error = 0;
  
-@@ -1103,8 +1113,13 @@
+ 	if (!su.writable || su.nblocks <= SWEET_LOG_BLOCKS) {
+@@ -1103,8 +1118,13 @@
  				diag_done = 1;
  				sweet_diag_display();
  			}

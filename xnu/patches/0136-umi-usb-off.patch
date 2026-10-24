@@ -1,0 +1,19 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -652,12 +652,13 @@
+ 	 * separately; they hang while their buses are not initialized yet. */
+ #if 0
+ 	sweet_keys_init();
+ 	sweet_touch_init();
++	/* The USB controller is not usable this early: with the probe enabled
++	 * the boot hung right here, before launchd ever ran, so it stays staged
++	 * off until the DWC3/PHY bring-up actually works. */
++	sweet_usb_probe();
+ #endif
+-	/* USB is gated by the sweetusb boot argument (0 off, 1 report state,
+-	 * 2 also start the ECM gadget that streams this log to 192.168.7.1). */
+-	sweet_usb_probe();
+ 	return 0;
+ }
+ 
+ /*

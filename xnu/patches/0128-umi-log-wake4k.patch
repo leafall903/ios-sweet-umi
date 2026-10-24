@@ -1,0 +1,12 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -700,7 +700,7 @@
+ 	 * Only wake the flusher thread, and only once it has been started. */
+ 	{
+ 		static uint64_t _Atomic woken;
+ 		uint64_t w = os_atomic_load(&woken, relaxed);
+-		if (sweet_log_thread_started && at - w >= 65536 &&
++		if (sweet_log_thread_started && at - w >= 4096 &&
+ 		    os_atomic_cmpxchg(&woken, w, at, relaxed)) {
+ 			wakeup(&sweet_log_chan);
+ 		}

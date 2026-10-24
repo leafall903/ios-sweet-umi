@@ -1,6 +1,6 @@
 --- a/bsd/dev/sweet_ufs.c
 +++ b/bsd/dev/sweet_ufs.c
-@@ -984,7 +984,15 @@
+@@ -977,9 +977,18 @@
  		if (n > 0) {
  			sweet_log_append(tick, n);
  		}
@@ -10,7 +10,7 @@
 +		 * Wake on output, and in any case every five seconds: an absolute
 +		 * deadline does not depend on hz being initialised (it is not, at the
 +		 * point where this thread is first started). Five seconds keeps the
-+		 * timestamp line useful without drowning the log or the disk.
++		 * timestamp useful without drowning the log or the disk.
 +		 */
 +		uint64_t deadline;
 +		clock_interval_to_deadline(5, NSEC_PER_SEC, &deadline);
@@ -18,3 +18,5 @@
 +		thread_block(THREAD_CONTINUE_NULL);
  	}
  }
+ 
+ /* Started at the first exec (kern_exec.c): by then the scheduler runs and hz

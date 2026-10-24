@@ -1,6 +1,6 @@
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
-@@ -36,8 +36,15 @@
+@@ -36,11 +36,19 @@
   */
  #include "SweetSurface.h"
  
@@ -15,8 +15,12 @@
  
  #if defined(SWEET)
  #include <IOKit/IOService.h>
++#include <IOKit/IODeviceTreeSupport.h>
  #include <IOKit/IOUserClient.h>
-@@ -89,8 +96,49 @@
+ #include <IOKit/IOKitKeys.h>
+ #include <IOKit/IOLib.h>
+ #include <IOKit/IOLocks.h>
+@@ -89,8 +97,49 @@
  OSDefineMetaClassAndStructors(IOMobileFramebuffer, IOService);
  
  class IOMobileFramebufferUserClient;

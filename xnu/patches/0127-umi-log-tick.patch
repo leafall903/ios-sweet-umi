@@ -1,0 +1,20 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -967,8 +967,17 @@
+ static void
+ sweet_log_thread(__unused void *arg, __unused wait_result_t wr)
+ {
+ 	for (;;) {
++		/* A time stamp in the ring, so the persisted log shows how far the
++		 * kernel got and when it stopped. Appending here is safe: this is the
++		 * ring, not the console, and it takes no lock. */
++		char tick[64];
++		int n = snprintf(tick, sizeof(tick), "\nSWEET TICK %llu\n",
++		    (unsigned long long)mach_absolute_time());
++		if (n > 0) {
++			sweet_log_append(tick, n);
++		}
+ 		sweet_log_flush_to_disk();
+ 		(void)tsleep(&sweet_log_chan, PZERO, "sweetlog", hz > 0 ? hz : 100);
+ 	}
+ }

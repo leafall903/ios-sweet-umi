@@ -129,3 +129,17 @@
  		uint64_t total = os_atomic_load(&sweet_log_total, relaxed);
  		if (total == flushed) {
  			continue;
+@@ -1060,13 +952,7 @@
+ sweet_log_start(void)
+ {
+ 	uint32_t on = 1;
+-	uint32_t no_vc = 0;
+ 	thread_t thread;
+-
+-	if (PE_parse_boot_argn("sweetnoconsole", &no_vc, sizeof(no_vc)) && no_vc) {
+-		sweet_no_vc = 1;
+-		printf("SWEET FB: video console muted, panel owns the screen\n");
+-	}
+ 
+ 	PE_parse_boot_argn("sweetlog", &on, sizeof(on));
+ 	if (!on || !su.writable || su.nblocks < 2 * SWEET_LOG_BLOCKS) {

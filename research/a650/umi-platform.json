@@ -1,0 +1,17 @@
+{
+  "device": "Xiaomi Mi 10 (umi)",
+  "soc": "Qualcomm SM8250",
+  "gpu": "Adreno 650 family",
+  "chip_id": "0x06050002",
+  "resources": {
+    "gpu": { "base": "0x03d00000", "size": "0x00040000" },
+    "gmu": { "base": "0x03d6a000", "size": "0x00030000" },
+    "gpucc": { "base": "0x03d90000", "size": "0x00009000" },
+    "gpu_smmu": { "base": "0x03da0000", "size": "0x00010000" }
+  },
+  "status": "resource profile only; no GPU bring-up implementation",
+  "references": [
+    "https://github.com/xiaomi-sm8250-devs/android_kernel_xiaomi_sm8250/tree/lineage-20/drivers/gpu/msm",
+    "https://github.com/oosexgang/hackios-xnu-kernel"
+  ]
+}

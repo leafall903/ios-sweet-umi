@@ -1,14 +1,17 @@
 # 小米 10 / umi：iOS 16 适配研究
 
-**维护者：[leafall903](https://github.com/leafall903)** · [English](README.en.md) · 状态更新：2026-10-25
+**维护者：[leafall903](https://github.com/leafall903)** · [English](README.en.md) · 状态更新：2026-10-26
 
-在小米 10（`umi`，骁龙 865 / SM8250）上启动 iPhone 界面的 iOS 16，逐步适配存储、触控、多核与显示。实机已经进入锁屏、设置和 SpringBoard 界面，触控及实体按键能够工作；**当前仍使用 CPU framebuffer，Adreno 650 硬件加速没有完成，未达到稳定 60 fps。**
+在小米 10（`umi`，骁龙 865 / SM8250）上启动 iPhone 界面的 iOS 16，逐步适配存储、触控、多核与显示。16.7.16 实机已经进入锁屏、设置和 SpringBoard，触控及实体按键能够工作；**A650 最小渲染和 GL 初始化已验证，完整 GUI 性能仍在适配，未达到稳定 60 fps。**
+
+新增的 **16.5 完整对照镜像仍在解决首次启动问题**，不能把该版本记为桌面成功。保留可用的 16.7.16 / v23。[对照、启动修复与可复用工具](docs/ios165-comparison.md)记录了新根卷标识绑定及首次启动状态问题。
 
 本仓库由 leafall903 独立维护。继承的 XNU 补丁保留原始作者与提交历史；它们与本次实机研究记录的关系见 [代码来源与贡献说明](docs/provenance.md)。本项目尚未获 HackiOS 官方收录。
 
 ## 阅读入口
 
 - [实机状态与 A650 缺口](research/umi10-a650-status.md)
+- [16.5 完整对照与启动修复](docs/ios165-comparison.md)
 - [版本进展与性能证据](docs/bringup-history.md)
 - [复现条件、仓库内容与发布限制](docs/reproduction.md)
 - [代码来源、维护者与 GitHub 贡献者的区别](docs/provenance.md)
@@ -44,8 +47,8 @@
 | 60 Hz 模式与呈现调度 | 已实现实验配置 | 配置为 60 Hz 不等于实际动画达到 60 fps；见下方测量 |
 | 壁纸 | 未解决 | 资源转换与兼容候选实机测试后，机主反馈没有明显改善 |
 | 时钟 / 日历等小组件 | 未解决 | 位置空白或全黑；快照、扩展服务与合成路径尚未串通验证 |
-| 透明、模糊与 vibrancy | 未解决 | 出现模糊方向异常、透明短暂出现后消失；纯色替代不算修复 |
-| Adreno 650 GPU | 仅诊断阶段 | v18 读取 GPUCC；v19 短时 CX 探测。没有成功执行 GPU 渲染命令 |
+| 透明、模糊与 vibrancy | 16.7.16 v23 机主确认模糊正常 | sRGB 与真实 BGRA 分配修正后观察到改善；16.5 对照版尚未通过桌面测试 |
+| Adreno 650 GPU | 最小渲染和 GL 初始化已验证 | GMU/HFI/CP/fence 与 FD650 RGBA clear/readback 通过，持久日志记录 GL 启用；不能据此宣称所有 GUI 都已加速 |
 | Metal / 完整 CoreAnimation GPU 路径 | 未实现 | 仍需 GPU 内核客户端、用户态渲染及离屏计算路径 |
 | Wi-Fi、蜂窝、蓝牙、音频、摄像头、充电、Apple ID、App Store | 本次没有成功验证 | 不能从其他机型的 HackiOS 功能表推断本机可用 |
 
@@ -66,9 +69,9 @@ v16 一次约 1 秒窗口记录到约 **52.22 次提交/秒、40.39 次呈现/�
 
 ## A650 加速还缺什么
 
-1. 按 SM8250 / umi 的实际供电、时钟、复位和固件要求启动 GMU，验证 HFI / TrustZone 相关路径。
-2. 建立 GPU/GMU 的 SMMU 流路由、页表、缓存一致性、命令环和故障恢复，先完成最小原生渲染。
-3. 接通 XNU GPU 客户端与用户空间 Mesa/freedreno、CoreAnimation 及相关 Metal 离屏路径，再验证壁纸、小组件和模糊。
+1. 在已通过的 GMU/HFI/CP/fence 和 FD650 最小渲染基础上扩大稳定性验证。
+2. 核对 GPU/GMU SMMU、缓存一致性、命令生命周期和故障恢复在持续 GUI 负载下的行为。
+3. 验证 Mesa/freedreno 与 CoreAnimation 的完整输出链，继续适配 Metal 离屏路径、壁纸和小组件。
 4. 用持续滑动、可重复场景和帧时间测量验证稳定性与性能。
 
 [平台档案](research/a650/)只包含地址、长度和芯片 ID。`power_on=1` 只是一项电源探测观察，不是 GPU 加速成功。Redwood 的 Adreno 642L 与本机 A650 存在芯片 ID、资源范围和固件差异，不能原样复制初始化序列。

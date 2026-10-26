@@ -1,8 +1,10 @@
 # Xiaomi Mi 10 / umi: iOS 16 research
 
-**Maintained by [leafall903](https://github.com/leafall903)** · [中文](README.md) · Updated 2026-10-25
+**Maintained by [leafall903](https://github.com/leafall903)** · [中文](README.md) · Updated 2026-10-26
 
-This project researches booting an iPhone-style iOS 16 environment on the Xiaomi Mi 10, adapting storage, input, CPU bring-up and display presentation. The device has reached the lock screen, Settings and SpringBoard UI. It still uses a CPU framebuffer. **Adreno 650 acceleration and sustained 60 fps are not demonstrated.**
+This project researches booting an iPhone-style iOS 16 environment on the Xiaomi Mi 10, adapting storage, input, CPU bring-up and display presentation. iOS16.7.16 has reached the lock screen, Settings and SpringBoard UI. **A650 minimal rendering and GL initialization have been verified; complete GUI acceleration and sustained60fps remain under investigation.**
+
+A separate complete iOS16.5/20F66 comparison root is now being tested, while the usable16.7.16/v23 root is retained. Its desktop is not yet validated. See the [comparison and boot fixes](docs/ios165-comparison.md) for exact-volume policy generation and missing research startup state.
 
 ## Target
 
@@ -32,8 +34,8 @@ The tested layout replaced Android userdata. Temporary booting of the loader doe
 | Display | Early wrong colors / visible line-by-line refresh substantially improved; composition issues remain |
 | 60 Hz mode | Experimental mode/pacing implemented; actual animation is not sustained 60 fps |
 | Wallpapers and widgets | Unresolved; installed compatibility candidate produced no meaningful improvement in the tester's report |
-| Blur / transparency / vibrancy | Unresolved, including incorrect blur orientation and disappearing transparency |
-| A650 | v18 register preflight and v19 short CX power-domain probe only; no GPU rendering |
+| Blur / transparency / vibrancy | The tester reported normal blur on16.7.16/v23 after sRGB and real BGRA allocation changes;16.5 is pending |
+| A650 | GMU/HFI/CP/fence and FD650 RGBA clear/readback verified; persistent logs show GL enabled. This does not establish acceleration for every GUI workload |
 | Metal / GPU composition | Not implemented for this device |
 | Wi-Fi, cellular, Bluetooth, audio, camera, charging, Apple ID, App Store | No successful device validation in this research; upstream results from other devices do not establish support here |
 
@@ -47,7 +49,7 @@ v15 exposed `IOGMD: not wired for the IODMACommand`. The descriptor prepare / tr
 
 ## A650 work still required
 
-Validate umi-specific clocks, resets, power and GMU firmware/HFI requirements; implement SMMU routing/page tables, coherency, command rings and fault recovery; then connect a suitable XNU/userspace rendering path and test CoreAnimation and Metal-dependent offscreen behavior. Redwood's 642L sequence is not interchangeable with umi A650.
+Extend the verified minimal rendering path to sustained GUI workloads; validate SMMU routing, coherency, command lifetimes and fault recovery, and continue CoreAnimation and Metal-dependent offscreen work. Redwood's642L sequence is not interchangeable with umi A650.
 
 The [A650 profile](research/a650/) is a non-operational resource description. The [status report](research/umi10-a650-status.md) explicitly distinguishes CX power observations from working GPU acceleration.
 

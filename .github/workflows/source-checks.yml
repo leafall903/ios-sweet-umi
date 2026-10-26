@@ -1,0 +1,24 @@
+name: Source checkpoint checks
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Publication boundary and source correspondence
+        run: python3 tools/check_publication.py
+      - name: Bootstrap tools
+        run: python3 -m unittest discover -s tests -v
+      - name: Production-function host regressions
+        run: python3 devices/umi/tests/run_host_tests.py --sanitize
+      - name: Patch applies to the tested Apple base
+        run: |
+          git init -q /tmp/umi-xnu-base
+          git -C /tmp/umi-xnu-base fetch -q --depth 1 https://github.com/apple-oss-distributions/xnu 1b191cb58250d0705d8a51287127505aa4bc0789
+          git -C /tmp/umi-xnu-base checkout -q FETCH_HEAD
+          git -C /tmp/umi-xnu-base apply --check "$GITHUB_WORKSPACE/devices/umi/kernel/umi-v6.patch"

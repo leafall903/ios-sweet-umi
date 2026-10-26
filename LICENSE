@@ -1,0 +1,19 @@
+License index for ios-sweet-umi
+
+This is a mixed-license source repository, not a blanket relicensing of its history.
+
+* XNU-derived kernel patches and source: Apple Public Source License 2.0,
+  reproduced in LICENSE.APSL, with original per-file notices preserved.
+* Files carrying an explicit third-party license retain that license, including
+  BSD-2-Clause-Patent touch helpers, BearSSL MIT, libdispatch Apache 2.0,
+  and Mesa's per-file licenses. See THIRD_PARTY_LICENSES.md and LICENSES/.
+* HakiOS original non-kernel code retains the HakiOS authors' MIT license,
+  reproduced in LICENSES/HakiOS.txt and the adjacent upstream license copies.
+* Original leafall903 non-kernel tools, test harnesses and documentation added
+  for this publication use the MIT License in LICENSES/MIT-leafall903.txt.
+  This grant does not cover inherited or Apple-derived code merely because
+  it sits next to those additions.
+
+No license in this repository grants rights to Apple's proprietary iOS/SDK,
+phone firmware, service identities or third-party trademarks. Those inputs
+are not distributed. Original notices take precedence over this index.

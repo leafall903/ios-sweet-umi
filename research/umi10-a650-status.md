@@ -1,36 +1,28 @@
-# Xiaomi Mi 10 iOS 16 research status
+# Xiaomi Mi 10 / Adreno 650 status
 
-**Snapshot:** 2026-10-25  
-**Device:** Xiaomi Mi 10 (`umi`), Qualcomm SM8250, Adreno 650 v3 (reported by Recovery KGSL)
+**Updated 2026-10-26 · Current published checkpoint: iOS 16.5 v6.** This replaces the earlier v18/v19 probe-only status. See the [current feature table](../README.md) and [source checkpoint](../devices/umi/README.md).
 
-## Results observed on the device
+## What has actually progressed
 
-- The experimental iOS 16 build reached the lock screen and UI. Multi-core bring-up was tested up to eight CPUs; this is separate from GPU acceleration.
-- The UI currently uses a CPU framebuffer. The user reported substantial improvement from later CPU/presentation changes, but it remains visibly less responsive than a 60 Hz-class experience. No verified 60 fps result is available.
-- A wallpaper/widget compatibility candidate was installed and tested. The user reported no meaningful improvement; widgets may remain blank/black and wallpaper behavior is unresolved.
-- Recovered diagnostic summaries showed `PosterBoard` exiting in the `PBFHomeScreenPreviewImageBuilder _imageForView:` path and `ScreenshotServicesService` aborting around Metal compute pipeline `setComputeFunction:`. These are observations, not a demonstrated root cause or proof that a compatibility library loaded correctly.
+The initial v18 read-only register probe and v19 CX-domain test were followed by a working experimental A650 path. Later device logs recorded GMU/HFI/CP/fence progress and an FD650 RGBA clear/readback result (64, 128, 191, 255). Subsequent builds connected the Mesa/freedreno GL bridge to the window-server rendering path. Those results are stronger than observing a power-domain bit, but they do not establish complete Metal or acceleration in every app.
 
-## Adreno 650 probes
+The v6 source publication includes the `SweetGPU` client, `sweet_gpu` backend, framebuffer/surface support, GL bridge and a pinned Mesa 25.0.7 code patch. The final display path still includes a CPU framebuffer copy. The owner reports improved usability and no remaining display corruption in the v6 test, but still requests smoother operation. **No sustained, reproducible 60 fps result for v6 is available.** Earlier CPU-era driver call counters are not a current animation-FPS benchmark.
 
-- Device-tree inputs identify GPU chip ID `0x06050002`. The current local platform profile records GPU `0x03d00000/0x40000`, GMU `0x03d6a000/0x30000`, GPUCC `0x03d90000/0x9000`, and GPU SMMU `0x03da0000/0x10000`.
-- A read-only v18 probe reached iOS and recorded GPUCC state. A v19 CX-domain probe briefly observed `power_on=1`, restored the collapse-control bit, and then reached iOS.
-- Neither probe establishes successful firmware execution, GMU/HFI communication, 3D power-up, SMMU translation, command submission, or rendering. No GPU register bring-up code is presented here as a working driver.
-- Recovery Linux reported a maximum GPU clock of 587 MHz. This is Linux-driver metadata and says nothing about iOS performance.
+## Device-specific configuration
 
-## Difference from the Redwood reference
+The phone reports Adreno 650 v3 in Recovery KGSL. The research device-tree profile records chip ID `0x06050002`, GPU `0x03d00000/0x40000`, GMU `0x03d6a000/0x30000`, GPUCC `0x03d90000/0x9000`, and GPU SMMU `0x03da0000/0x10000`. These constants describe this platform; the separate [parameter archive](a650/) is not by itself an executable driver.
 
-The HackiOS XNU reference targets a Redwood Adreno 642L configuration, while this device reports an A650 family ID. Local notes identified different chip ID and GMU/SMMU/RSCC resource sizes, and A650 firmware names. Copying the Redwood sequence as-is would be unsafe and does not amount to an A650 port.
+Redwood's Adreno 642L configuration is a reference, not a drop-in initialization sequence for A650. Firmware, memory ranges, SMMU context routing and GPU/GMU setup require device-specific treatment. Vendor firmware must be supplied locally and is not included in this repository.
 
-## Work still required for acceleration
+## v6 graphics/input changes
 
-1. Validate the exact A650 power, reset, clock, and GMU firmware path against the device tree and vendor/Linux implementation.
-2. Implement and validate SMMU stream routing and page tables, cache coherency, GMU/HFI, command rings, and fault recovery.
-3. Connect a compatible XNU GPU client and userspace stack to CoreAnimation/display composition, including the Metal-dependent offscreen paths implicated by diagnostics.
-4. Measure sustained frame times and validate wallpaper, widgets, transparency, and touch behavior on-device.
+- SweetSurface accepts the actual minimal non-planar client-memory span, including a partial final padded row, while rejecting malformed or undersized geometry. Owned/planar policy is retained.
+- The GL image table uses 2048 stable heap entries and balances surface/group ownership through replacement, deletion and teardown.
+- The v5 early `FD_MESA_DEBUG=sysmem` wrapper and native FTS no-op handling are retained.
+- Widgets were reported normal in v5. Wallpaper had appeared before v6, with broken effects in earlier tests. The owner reported no remaining display errors in v6; every style/effect/provider has not been independently audited.
 
-Until these steps are demonstrated end to end, the project should be described as **booting iOS UI with experimental A650 diagnostics**, not “A650 accelerated”.
+## Still incomplete
 
-## References
+Sustained frame-time and latency measurements, power/thermal behavior, wider resource lifetime/fault recovery tests, Metal-dependent app paths and more direct display presentation remain work items. Maps and Settings → Date & Time are known owner-reported failures. Other hardware and Apple services are not established by this graphics result. Untested local v7 work is excluded from this checkpoint.
 
-- [HackiOS XNU kernel](https://github.com/oosexgang/hackios-xnu-kernel)
-- [Xiaomi SM8250 Linux GPU driver sources](https://github.com/xiaomi-sm8250-devs/android_kernel_xiaomi_sm8250/tree/lineage-20/drivers/gpu/msm)
+Sources, exact dependency pins and test limitations are in [reproduction](../docs/reproduction.md), [provenance](../docs/provenance.md), and the [license inventory](../THIRD_PARTY_LICENSES.md).

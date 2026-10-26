@@ -1,3 +1,11 @@
+# Current checkpoint: iOS 16.5 v6 (2026-10-26)
+
+The published source checkpoint is now **iOS 16.5 / 20F66 v6**. The owner reported widgets normal in v5 and no remaining display errors in the v6 test. Smoothness, Maps, Date & Time and wider feature support remain incomplete; no sustained 60 fps result is claimed. See the [current README](../README.md), [16.5 progression](ios165-comparison.md) and [source/build boundaries](reproduction.md).
+
+The material below is preserved as the **historical Chinese bring-up record**, including older 16.7.16/v17–v19 observations. Statements about missing wallpaper/widgets or probe-only A650 work describe those earlier checkpoints, not the current feature table.
+
+---
+
 # 实机适配进展与证据
 
 状态整理于 2026-10-25。版本号是本次本地实验镜像标签，不是 GitHub release；它们不对应本仓库中每一个继承补丁的编号。

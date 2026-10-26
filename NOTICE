@@ -1,0 +1,28 @@
+ios-sweet-umi — Xiaomi Mi 10 research source checkpoint
+Maintainer: leafall903
+Publication: umi-ios16.5-v6, 2026-10-26
+
+This independent repository preserves inherited commit authors and notices.
+It is not an official Apple, Xiaomi, Qualcomm or HakiOS/HackiOS distribution.
+
+Apple XNU, HFS and libpthread sources retain their original Apple/APSL and
+per-file notices. The v6 kernel base is xnu-8796.141.3, not the different base
+currently used by upstream HakiOS. The Apple open-source license does not
+cover proprietary iOS or SDK files.
+
+Inherited ios-sweet-umi / ios-sweet work includes contributions from
+myh982516, dipa-studio and their upstream authors. Mi 10 UFS/SMMU research
+references reAAAq/UniXNU-umi. HakiOS kernel/userland work is by the HakiOS
+authors and upstream contributors. Their names are attribution, not a claim
+of present administration or participation in this phone's recent tests.
+
+Mesa/freedreno retains its upstream copyrights and per-file licenses.
+BearSSL retains Thomas Pornin's MIT notice. Open-source libdispatch firehose
+support retains Apple's Apache 2.0 notice. BSD-2-Clause-Patent FTS helpers
+retain that license. The native touch event reference is the public
+LineageOS Xiaomi SM8250 FTS driver; no controller firmware is bundled.
+
+Exact versions, scope, license copies and unresolved provenance boundaries
+are recorded in THIRD_PARTY_LICENSES.md and docs/provenance.md.
+No iOS image, SDK header dump, vendor firmware, screenshot, activation
+material, device identity, private disk image or raw personal log is supplied.
